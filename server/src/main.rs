@@ -18,12 +18,13 @@ mod game;
 mod message;
 mod options;
 
+use protocol::{Message, Request};
 use structopt::StructOpt;
 use tokio::net::{TcpListener, TcpStream};
 
-use game::{Game, GameHandle, PlayerId};
+use game::{Game, GameHandle, PlayerHandle};
+use message::{Channel, Frame};
 use options::Options;
-use protocol::{Request, Init};
 
 type Result<T> = anyhow::Result<T>;
 
@@ -98,39 +99,77 @@ impl Server {
 
 /// Handle an incoming connection.
 async fn handle_connection(mut stream: TcpStream, mut game: GameHandle) -> Result<()> {
-    let init = initialize_client(&mut stream).await?;
-    let player = game.register_player(init).await?;
+    let mut player = initialize_client(&mut stream, &mut game).await?;
+    let result = handle_client(&mut stream, &mut game, &mut player).await;
 
-    let result = handle_client(&mut stream, &mut game, player).await;
-
-    game.disconnect_player(player).await?;
+    game.disconnect_player(player.id()).await?;
 
     result
 }
 
 /// Wait for the client to initialize the connection.
-async fn initialize_client(stream: &mut TcpStream) -> Result<Init> {
-    match message::recv(stream).await? {
-        Request::Init(init) => Ok(init),
-        _ => Err(anyhow!("exepected an 'Init' message")),
-    }
+async fn initialize_client(stream: &mut TcpStream, game: &mut GameHandle) -> Result<PlayerHandle> {
+    let Frame {
+        channel,
+        data: request,
+    } = message::recv(stream).await?;
+
+    let init = match request {
+        Request::Init(init) => init,
+        _ => return Err(anyhow!("exepected an 'Init' request")),
+    };
+
+    let player = game.register_player(init).await?;
+
+    let connect = protocol::Connect {
+        player_id: player.id().into(),
+    };
+
+    message::send_response(stream, channel, connect).await?;
+
+    Ok(player)
 }
 
 /// Handle all messages coming from/to the client.
 async fn handle_client(
     stream: &mut TcpStream,
     game: &mut GameHandle,
-    player: PlayerId,
+    player: &mut PlayerHandle,
 ) -> Result<()> {
-    let connect = protocol::Connect {
-        player_id: player.into(),
-    };
+    let (mut reader, mut writer) = stream.split();
 
-    message::send_response(stream, connect).await?;
+    use futures::stream::StreamExt;
+    let requests = futures::stream::try_unfold(&mut reader, |reader| async move {
+        match message::recv(reader).await {
+            Ok(request) => Ok(Some((request, reader))),
+            Err(e) => Err(e),
+        }
+    });
+
+    tokio::pin!(requests);
 
     loop {
-        let request = message::recv(stream).await?;
-        let message = game.handle_request(request, player).await?;
-        message::send(stream, &message).await?;
+        tokio::select! {
+            request = requests.next() => match request {
+                None => break Ok(()),
+                Some(request) => {
+                    let Frame { channel, data } = request?;
+                    let message = game.handle_request(data, player.id()).await?;
+                    message::send(&mut writer, channel, &message).await?;
+                }
+            },
+
+            event = player.poll_event() => match event {
+                None => break Err(anyhow!("event channel closed")),
+                Some(event) => {
+                    log::info!("Got event: {:?}", event);
+                    let channel = Channel::broadcast();
+                    let message = Message::Event(event);
+                    message::send(&mut writer, channel, &message).await?;
+                }
+            },
+
+            else => {}
+        };
     }
 }

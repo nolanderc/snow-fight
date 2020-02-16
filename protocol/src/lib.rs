@@ -6,10 +6,12 @@
 use derive_more::From;
 use serde::{Deserialize, Serialize};
 
+
 /// A message sent from the server to the client.
 #[derive(Debug, Clone, Serialize, Deserialize, From)]
 pub enum Message {
-    Data(Response),
+    Response(Response),
+    Event(Event),
     Error(String),
 }
 
@@ -18,6 +20,7 @@ pub enum Message {
 pub enum Request {
     Init(Init),
     PlayerList,
+    SendChat(String),
 }
 
 /// Sent from the server to the client.
@@ -26,6 +29,7 @@ pub enum Response {
     Connect(Connect),
     Start,
     PlayerList(PlayerList),
+    ReceiveChat(String),
 }
 
 /// Establish the connection.
@@ -53,3 +57,7 @@ pub struct Player {
     pub id: u32,
     pub nickname: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Event;
+

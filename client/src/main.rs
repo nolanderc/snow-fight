@@ -4,13 +4,14 @@
 #[macro_use]
 extern crate anyhow;
 
+mod message;
 mod options;
 
+use message::Connection;
 use options::Options;
 
-use protocol::{Init, Message, Request, Response};
-use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::io::BufRead;
+use protocol::{Init, Request};
 use structopt::StructOpt;
 
 fn main() -> anyhow::Result<()> {
@@ -25,25 +26,33 @@ fn main() -> anyhow::Result<()> {
         options.port
     );
 
-    let stream = TcpStream::connect((options.addr, options.port))?;
+    let mut connection = Connection::establish((options.addr, options.port))?;
 
-    send_request(
-        &stream,
-        Request::Init(Init {
-            nickname: "Zynapse".to_owned(),
-        }),
-    )?;
+    let init = connection.send(Init {
+        nickname: "Zynapse".to_owned(),
+    })?;
 
-    let response = recv_message(&stream)?;
+    let response = connection.recv(init)?;
     println!("Received: {:?}", response);
 
-    loop {
-        send_request(&stream, Request::PlayerList)?;
-        let response = recv_message(&stream)?;
+    let stdin = std::io::stdin();
+
+    for line in stdin.lock().lines() {
+        let text = line?;
+
+        let list = connection.send(Request::SendChat(text))?;
+
+        let response = connection.recv(list)?;
         println!("Received: {:?}", response);
+
+        while let Some(message) = connection.poll_message() {
+            println!("Broadcast: {:?}", message);
+        }
 
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
+
+    Ok(())
 }
 
 /// Setup logging facilities.
@@ -51,48 +60,4 @@ fn setup_logger(options: &Options) {
     env_logger::Builder::new()
         .filter_level(options.log_level)
         .init();
-}
-
-/// Send a message.
-fn send_request<T>(stream: &TcpStream, data: T) -> anyhow::Result<()>
-where
-    T: Into<Request>,
-{
-    let text = serde_json::to_string(&data.into())?;
-    send_string(stream, &text)
-}
-
-fn recv_message(stream: &TcpStream) -> anyhow::Result<Response> {
-    let text = recv_string(stream)?;
-    let message: Message = serde_json::from_str(&text)?;
-
-    match message {
-        Message::Data(data) => Ok(data),
-        Message::Error(error) => Err(anyhow!("received error").context(error)),
-    }
-}
-
-/// Send a message by sending the message's length followed by the data.
-fn send_string(mut stream: &TcpStream, message: &str) -> anyhow::Result<()> {
-    let length = message.len() as u32;
-
-    stream.write_all(&length.to_be_bytes())?;
-    stream.write_all(message.as_bytes())?;
-
-    Ok(())
-}
-
-/// Receieve a message by reading the message's length followed by the data.
-fn recv_string(mut stream: &TcpStream) -> anyhow::Result<String> {
-    log::info!("Receiving string...");
-    let mut length_buffer = [0; 4];
-    stream.read_exact(&mut length_buffer)?;
-
-    let length = u32::from_be_bytes(length_buffer) as usize;
-    log::info!("Got length {}...", length);
-    let mut text = vec![0; length];
-
-    stream.read_exact(&mut text)?;
-
-    String::from_utf8(text).map_err(Into::into)
 }

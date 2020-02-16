@@ -2,11 +2,21 @@ mod world;
 
 use std::collections::BTreeMap;
 use std::fmt::{self, Debug, Display, Formatter};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{
+    mpsc::{self, error::TrySendError},
+    oneshot,
+};
+use tokio::time;
 
-use protocol::{Init, Message, PlayerList, Request, Response};
+use protocol::{Event, Init, Message, PlayerList, Request, Response};
 
 use world::World;
+
+/// How many times per second to update the game world.
+const TICK_RATE: u32 = 1;
+
+/// The maximum number of events to buffer per player.
+const EVENT_BUFFER_SIZE: usize = 16;
 
 pub struct Game {
     world: World,
@@ -21,6 +31,13 @@ pub struct PlayerId(u32);
 #[derive(Debug, Clone)]
 struct PlayerData {
     name: String,
+    events: mpsc::Sender<Event>,
+}
+
+#[derive(Debug)]
+pub struct PlayerHandle {
+    player: PlayerId,
+    events: mpsc::Receiver<Event>,
 }
 
 #[derive(Debug, Clone)]
@@ -37,7 +54,7 @@ enum Command {
     },
     RegisterPlayer {
         init: Init,
-        callback: Callback<PlayerId>,
+        callback: Callback<PlayerHandle>,
     },
     DisconnectPlayer(PlayerId),
 }
@@ -83,35 +100,80 @@ impl Game {
 
     /// Run the game to completion (either the handle is dropped or a fatal error occurs).
     pub async fn run(&mut self) {
-        while let Some(command) = self.receiver.recv().await {
-            log::debug!("got command: {:?}", command);
+        let mut timer = time::interval(time::Duration::from_secs(1) / TICK_RATE);
 
-            match command {
-                Command::RegisterPlayer { init, callback } => {
-                    callback.send(self.register_player(init));
+        loop {
+            tokio::select! {
+                _ = timer.tick() => {
+                    log::debug!("tick");
+                    self.tick();
                 }
-                Command::DisconnectPlayer(player) => {
-                    self.players.remove(&player);
+                Some(command) = self.receiver.recv() => {
+                    log::debug!("got command: {:?}", command);
+                    self.execute_command(command);
                 }
-                Command::Request {
-                    callback, request, ..
-                } => {
-                    let message = self.handle_request(request);
-                    callback.send(message);
+            };
+        }
+    }
+
+    fn tick(&mut self) {
+        let event = Event;
+
+        for (id, player) in &mut self.players {
+            match player.events.try_send(event.clone()) {
+                Ok(()) => {
+                    log::info!("Sent {:?} to {}", event, id)
+                }
+                Err(TrySendError::Full(_)) => {
+                    log::warn!("player {}'s event buffer is full", id);
+                    // TODO: request full client resync
+                }
+                Err(TrySendError::Closed(_)) => {
+                    log::info!("player {} stopped listening for events", id);
+                    // TODO: stop attempting to send events to this player, and potentially
+                    // disconnect them.
                 }
             }
         }
     }
 
+    /// Execute a command.
+    fn execute_command(&mut self, command: Command) {
+        match command {
+            Command::RegisterPlayer { init, callback } => {
+                callback.send(self.register_player(init));
+            }
+            Command::DisconnectPlayer(player) => {
+                self.players.remove(&player);
+            }
+            Command::Request {
+                callback,
+                request,
+                player,
+            } => {
+                let message = self.handle_request(request, player);
+                callback.send(message);
+            }
+        }
+    }
+
     /// Create and register a new player
-    fn register_player(&mut self, init: Init) -> PlayerId {
+    fn register_player(&mut self, init: Init) -> PlayerHandle {
         let player = self.next_player_id();
+
+        let (sender, receiver) = mpsc::channel(EVENT_BUFFER_SIZE);
+
         let data = PlayerData {
             name: init.nickname,
+            events: sender,
         };
 
         self.players.insert(player, data);
-        player
+
+        PlayerHandle {
+            player,
+            events: receiver,
+        }
     }
 
     /// Find the next available player id
@@ -130,7 +192,7 @@ impl Game {
     }
 
     /// Perform the request and return the result in a message
-    fn handle_request(&mut self, request: Request) -> Message {
+    fn handle_request(&mut self, request: Request, player: PlayerId) -> Message {
         match request {
             Request::Init(_) => {
                 let error = "Requested 'Init' on already initialized player";
@@ -138,6 +200,11 @@ impl Game {
             }
 
             Request::PlayerList => self.list_players(),
+
+            Request::SendChat(text) => {
+                println!("{} said: {}", player, text);
+                Response::ReceiveChat(text).into()
+            }
         }
     }
 
@@ -158,8 +225,8 @@ impl Game {
 
 impl GameHandle {
     /// Register a new client and return it's id.
-    pub async fn register_player(&mut self, init: Init) -> crate::Result<PlayerId> {
-        self.send_to(|callback| Command::RegisterPlayer { init, callback })
+    pub async fn register_player(&mut self, init: Init) -> crate::Result<PlayerHandle> {
+        self.send_with(|callback| Command::RegisterPlayer { init, callback })
             .await
     }
 
@@ -175,7 +242,7 @@ impl GameHandle {
         request: Request,
         player: PlayerId,
     ) -> crate::Result<Message> {
-        self.send_to(move |callback| Command::Request {
+        self.send_with(move |callback| Command::Request {
             request,
             player,
             callback,
@@ -185,7 +252,7 @@ impl GameHandle {
 
     /// Send a command to the game with the specified callback and then return the value passed into
     /// the callback.
-    async fn send_to<F, O>(&mut self, to_command: F) -> crate::Result<O>
+    async fn send_with<F, O>(&mut self, to_command: F) -> crate::Result<O>
     where
         F: FnOnce(Callback<O>) -> Command,
     {
@@ -193,6 +260,17 @@ impl GameHandle {
         let command = to_command(callback);
         self.sender.send(command).await?;
         value.await.map_err(Into::into)
+    }
+}
+
+impl PlayerHandle {
+    /// Get the id of this player
+    pub fn id(&self) -> PlayerId {
+        self.player
+    }
+
+    pub async fn poll_event(&mut self) -> Option<Event> {
+        self.events.recv().await
     }
 }
 
