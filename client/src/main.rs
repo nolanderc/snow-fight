@@ -5,13 +5,16 @@
 extern crate anyhow;
 
 mod message;
+mod oneshot;
 mod options;
 
 use message::Connection;
 use options::Options;
 
-use std::io::BufRead;
 use protocol::{Init, Request};
+use std::io::BufRead;
+use std::sync::mpsc::channel;
+use std::thread;
 use structopt::StructOpt;
 
 fn main() -> anyhow::Result<()> {
@@ -30,29 +33,40 @@ fn main() -> anyhow::Result<()> {
 
     let init = connection.send(Init {
         nickname: "Zynapse".to_owned(),
-    })?;
+    });
 
-    let response = connection.recv(init)?;
-    println!("Received: {:?}", response);
+    println!("Received: {:?}", init.wait());
 
-    let stdin = std::io::stdin();
+    let (sender, chats) = channel();
+    thread::spawn(move || {
+        let stdin = std::io::stdin();
+        for line in stdin.lock().lines() {
+            let text = match line {
+                Err(e) => {
+                    log::error!("Failed to read line: {}", e);
+                    continue;
+                }
+                Ok(line) => line,
+            };
 
-    for line in stdin.lock().lines() {
-        let text = line?;
+            if let Err(e) = sender.send(text) {
+                log::error!("Failed to send chat message: {}", e);
+                break;
+            }
+        }
+    });
 
-        let list = connection.send(Request::SendChat(text))?;
-
-        let response = connection.recv(list)?;
-        println!("Received: {:?}", response);
-
-        while let Some(message) = connection.poll_message() {
-            println!("Broadcast: {:?}", message);
+    loop {
+        while let Some(message) = connection.poll_message()? {
+            log::info!("Broadcast: {:?}", message);
         }
 
-        std::thread::sleep(std::time::Duration::from_millis(500));
-    }
+        while let Ok(chat) = chats.try_recv() {
+            connection.send(Request::SendChat(chat));
+        }
 
-    Ok(())
+        std::thread::sleep(std::time::Duration::from_secs(1) / 60);
+    }
 }
 
 /// Setup logging facilities.
