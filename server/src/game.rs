@@ -16,7 +16,7 @@ use world::World;
 const TICK_RATE: u32 = 1;
 
 /// The maximum number of events to buffer per player.
-const EVENT_BUFFER_SIZE: usize = 16;
+const EVENT_BUFFER_SIZE: usize = 128;
 
 pub struct Game {
     world: World,

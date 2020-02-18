@@ -18,8 +18,10 @@ mod game;
 mod message;
 mod options;
 
-use protocol::{Message, Request};
+use futures::stream::StreamExt;
+use protocol::{Event, Message, Request};
 use structopt::StructOpt;
+use tokio::io::AsyncWrite;
 use tokio::net::{TcpListener, TcpStream};
 
 use game::{Game, GameHandle, PlayerHandle};
@@ -138,7 +140,6 @@ async fn handle_client(
 ) -> Result<()> {
     let (mut reader, mut writer) = stream.split();
 
-    use futures::stream::StreamExt;
     let requests = futures::stream::try_unfold(&mut reader, |reader| async move {
         match message::recv(reader).await {
             Ok(request) => Ok(Some((request, reader))),
@@ -153,9 +154,7 @@ async fn handle_client(
             request = requests.next() => match request {
                 None => break Ok(()),
                 Some(request) => {
-                    let Frame { channel, data } = request?;
-                    let message = game.handle_request(data, player.id()).await?;
-                    message::send(&mut writer, channel, &message).await?;
+                    handle_request(&mut writer, request?, game, player).await?;
                 }
             },
 
@@ -163,13 +162,36 @@ async fn handle_client(
                 None => break Err(anyhow!("event channel closed")),
                 Some(event) => {
                     log::info!("Got event: {:?}", event);
-                    let channel = Channel::broadcast();
-                    let message = Message::Event(event);
-                    message::send(&mut writer, channel, &message).await?;
+                    handle_event(&mut writer, event).await?;
                 }
             },
 
             else => {}
         };
     }
+}
+
+async fn handle_request<W>(
+    writer: &mut W,
+    request: Frame<Request>,
+    game: &mut GameHandle,
+    player: &PlayerHandle,
+) -> Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    let Frame { channel, data } = request;
+    let message = game.handle_request(data, player.id()).await?;
+    message::send(writer, channel, &message).await?;
+    Ok(())
+}
+
+async fn handle_event<W>(writer: &mut W, event: Event) -> Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    let channel = Channel::broadcast();
+    let message = Message::Event(event);
+    message::send(writer, channel, &message).await?;
+    Ok(())
 }
