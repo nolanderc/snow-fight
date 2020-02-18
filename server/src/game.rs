@@ -121,9 +121,7 @@ impl Game {
 
         for (id, player) in &mut self.players {
             match player.events.try_send(event.clone()) {
-                Ok(()) => {
-                    log::info!("Sent {:?} to {}", event, id)
-                }
+                Ok(()) => {}
                 Err(TrySendError::Full(_)) => {
                     log::warn!("player {}'s event buffer is full", id);
                     // TODO: request full client resync

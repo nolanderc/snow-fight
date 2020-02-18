@@ -161,7 +161,6 @@ async fn handle_client(
             event = player.poll_event() => match event {
                 None => break Err(anyhow!("event channel closed")),
                 Some(event) => {
-                    log::info!("Got event: {:?}", event);
                     handle_event(&mut writer, event).await?;
                 }
             },
