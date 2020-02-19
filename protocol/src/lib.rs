@@ -3,9 +3,16 @@
 //!
 //! Contains common data structures for the protocol implementation.
 
+mod de;
+mod error;
+mod ser;
+
+pub use ser::to_bytes;
+pub use de::from_bytes;
+pub use error::{Error, Result};
+
 use derive_more::From;
 use serde::{Deserialize, Serialize};
-
 
 /// A message sent from the server to the client.
 #[derive(Debug, Clone, Serialize, Deserialize, From)]
@@ -60,4 +67,3 @@ pub struct Player {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Event;
-
