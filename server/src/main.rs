@@ -18,14 +18,14 @@ mod game;
 mod message;
 mod options;
 
+use anyhow::Context;
 use futures::stream::StreamExt;
-use protocol::{Event, Message, Request};
+use protocol::{Event, Request, RequestKind};
 use structopt::StructOpt;
 use tokio::io::AsyncWrite;
 use tokio::net::{TcpListener, TcpStream};
 
 use game::{Game, GameHandle, PlayerHandle};
-use message::{Channel, Frame};
 use options::Options;
 
 type Result<T> = anyhow::Result<T>;
@@ -78,7 +78,7 @@ impl Server {
             let (stream, peer_addr) = match self.listener.accept().await {
                 Ok(incoming) => incoming,
                 Err(error) => {
-                    log::error!("Failed to accept connection: {}", error);
+                    log::error!("Failed to accept connection: {:#}", error);
                     continue;
                 }
             };
@@ -89,9 +89,13 @@ impl Server {
 
             tokio::spawn(async move {
                 match handle_connection(stream, game).await {
-                    Ok(()) => log::info!("Done with the client {}", peer_addr),
+                    Ok(()) => log::info!("Done with the client [{}]", peer_addr),
                     Err(error) => {
-                        log::error!("An error occured with the client {}: {}", peer_addr, error)
+                        log::error!(
+                            "An error occured with the client [{}]: {:?}",
+                            peer_addr,
+                            error
+                        );
                     }
                 }
             });
@@ -101,33 +105,49 @@ impl Server {
 
 /// Handle an incoming connection.
 async fn handle_connection(mut stream: TcpStream, mut game: GameHandle) -> Result<()> {
-    let mut player = initialize_client(&mut stream, &mut game).await?;
-    let result = handle_client(&mut stream, &mut game, &mut player).await;
+    let mut player = initialize_client(&mut stream, &mut game)
+        .await
+        .context("failed to initialize client")?;
 
-    game.disconnect_player(player.id()).await?;
+    let result = handle_client(&mut stream, &mut game, &mut player)
+        .await
+        .context("failed to serve client");
+
+    game.disconnect_player(player.id())
+        .await
+        .with_context(|| format!("when disconnecting player {}", player.id()))?;
 
     result
 }
 
 /// Wait for the client to initialize the connection.
 async fn initialize_client(stream: &mut TcpStream, game: &mut GameHandle) -> Result<PlayerHandle> {
-    let Frame {
-        channel,
-        data: request,
-    } = message::recv(stream).await?;
+    let request = message::recv(stream)
+        .await
+        .context("failed to receive init request")?;
 
-    let init = match request {
-        Request::Init(init) => init,
-        _ => return Err(anyhow!("exepected an 'Init' request")),
+    let init = match request.kind {
+        RequestKind::Init(init) => init,
+        _ => {
+            return Err(anyhow!(
+                "exepected an 'Init' request, found '{}'",
+                request.kind.name()
+            ))
+        }
     };
 
-    let player = game.register_player(init).await?;
+    let player = game
+        .register_player(init)
+        .await
+        .context("failed to register player")?;
 
     let connect = protocol::Connect {
-        player_id: player.id().into(),
+        player_id: player.id(),
     };
 
-    message::send_response(stream, channel, connect).await?;
+    message::send_response(stream, (request.channel, connect))
+        .await
+        .context("failed to send connection response")?;
 
     Ok(player)
 }
@@ -154,7 +174,8 @@ async fn handle_client(
             request = requests.next() => match request {
                 None => break Ok(()),
                 Some(request) => {
-                    handle_request(&mut writer, request?, game, player).await?;
+                    let request = request.context("bad request")?;
+                    handle_request(&mut writer, request, game, player).await?;
                 }
             },
 
@@ -172,16 +193,15 @@ async fn handle_client(
 
 async fn handle_request<W>(
     writer: &mut W,
-    request: Frame<Request>,
+    request: Request,
     game: &mut GameHandle,
     player: &PlayerHandle,
 ) -> Result<()>
 where
     W: AsyncWrite + Unpin,
 {
-    let Frame { channel, data } = request;
-    let message = game.handle_request(data, player.id()).await?;
-    message::send(writer, channel, &message).await?;
+    let response = game.handle_request(request, player.id()).await?;
+    message::send_response(writer, response).await?;
     Ok(())
 }
 
@@ -189,8 +209,6 @@ async fn handle_event<W>(writer: &mut W, event: Event) -> Result<()>
 where
     W: AsyncWrite + Unpin,
 {
-    let channel = Channel::broadcast();
-    let message = Message::Event(event);
-    message::send(writer, channel, &message).await?;
+    message::send_event(writer, event).await?;
     Ok(())
 }

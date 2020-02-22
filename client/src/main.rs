@@ -11,7 +11,7 @@ mod options;
 use message::Connection;
 use options::Options;
 
-use protocol::{Init, Request};
+use protocol::{Init, RequestKind};
 use std::io::BufRead;
 use std::sync::mpsc::channel;
 use std::thread;
@@ -57,12 +57,12 @@ fn main() -> anyhow::Result<()> {
     });
 
     loop {
-        while let Some(message) = connection.poll_message()? {
-            log::info!("Broadcast: {:?}", message);
+        while let Some(event) = connection.poll_event()? {
+            log::info!("Event: {:?}", event);
         }
 
         while let Ok(chat) = chats.try_recv() {
-            connection.send(Request::SendChat(chat));
+            connection.send(RequestKind::SendChat(chat));
         }
 
         std::thread::sleep(std::time::Duration::from_secs(1) / 60);

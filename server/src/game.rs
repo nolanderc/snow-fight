@@ -1,14 +1,17 @@
 mod world;
 
 use std::collections::BTreeMap;
-use std::fmt::{self, Debug, Display, Formatter};
+use std::fmt::{self, Debug, Formatter};
 use tokio::sync::{
     mpsc::{self, error::TrySendError},
     oneshot,
 };
 use tokio::time;
 
-use protocol::{Event, Init, Message, PlayerList, Request, Response};
+use protocol::{
+    Chat, Event, EventKind, Init, PlayerId, PlayerList, Request, RequestKind, Response,
+    ResponseKind,
+};
 
 use world::World;
 
@@ -19,14 +22,12 @@ const TICK_RATE: u32 = 1;
 const EVENT_BUFFER_SIZE: usize = 128;
 
 pub struct Game {
-    world: World,
     players: BTreeMap<PlayerId, PlayerData>,
-
     receiver: mpsc::Receiver<Command>,
-}
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct PlayerId(u32);
+    world: World,
+    time: u32,
+}
 
 #[derive(Debug, Clone)]
 struct PlayerData {
@@ -50,7 +51,7 @@ enum Command {
     Request {
         request: Request,
         player: PlayerId,
-        callback: Callback<Message>,
+        callback: Callback<Response>,
     },
     RegisterPlayer {
         init: Init,
@@ -61,18 +62,6 @@ enum Command {
 
 struct Callback<T> {
     sender: oneshot::Sender<T>,
-}
-
-impl Into<u32> for PlayerId {
-    fn into(self) -> u32 {
-        self.0
-    }
-}
-
-impl Display for PlayerId {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        write!(f, "P{}", self.0)
-    }
 }
 
 // We don't care what the callback contains, simply print the expected return type.
@@ -88,9 +77,10 @@ impl Game {
         let (sender, receiver) = mpsc::channel(1024);
 
         let game = Game {
-            world: World {},
             players: BTreeMap::new(),
             receiver,
+            world: World {},
+            time: 0,
         };
 
         let handle = GameHandle { sender };
@@ -117,7 +107,23 @@ impl Game {
     }
 
     fn tick(&mut self) {
-        let event = Event;
+        let events = Vec::<EventKind>::new();
+
+        for event in events {
+            self.broadcast(event);
+        }
+
+        self.time += 1;
+    }
+
+    fn broadcast<T>(&mut self, kind: T)
+    where
+        T: Into<EventKind>,
+    {
+        let event = Event {
+            time: self.time,
+            kind: kind.into(),
+        };
 
         for (id, player) in &mut self.players {
             match player.events.try_send(event.clone()) {
@@ -190,34 +196,32 @@ impl Game {
     }
 
     /// Perform the request and return the result in a message
-    fn handle_request(&mut self, request: Request, player: PlayerId) -> Message {
-        match request {
-            Request::Init(_) => {
+    fn handle_request(&mut self, request: Request, player: PlayerId) -> Response {
+        let response = match request.kind {
+            RequestKind::Init(_) => {
                 let error = "Requested 'Init' on already initialized player";
-                Message::Error(error.to_string())
+                ResponseKind::Error(error.into())
             }
 
-            Request::PlayerList => self.list_players(),
+            RequestKind::PlayerList => self.list_players(),
 
-            Request::SendChat(text) => {
-                println!("{} said: {}", player, text);
-                Response::ReceiveChat(text).into()
+            RequestKind::SendChat(message) => {
+                let chat = Chat { player, message };
+                self.broadcast(chat);
+                ResponseKind::ChatSent
             }
+        };
+
+        Response {
+            channel: request.channel,
+            kind: response,
         }
     }
 
     /// Return a list of all currently connected players.
-    fn list_players(&self) -> Message {
-        let players = self
-            .players
-            .iter()
-            .map(|(&id, data)| protocol::Player {
-                id: id.into(),
-                nickname: data.name.clone(),
-            })
-            .collect();
-
-        Response::PlayerList(PlayerList { players }).into()
+    fn list_players(&self) -> ResponseKind {
+        let players = self.players.keys().copied().collect();
+        PlayerList { players }.into()
     }
 }
 
@@ -239,7 +243,7 @@ impl GameHandle {
         &mut self,
         request: Request,
         player: PlayerId,
-    ) -> crate::Result<Message> {
+    ) -> crate::Result<Response> {
         self.send_with(move |callback| Command::Request {
             request,
             player,

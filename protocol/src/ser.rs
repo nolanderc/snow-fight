@@ -1,4 +1,5 @@
 use crate::error::{Error, Result};
+use crate::leb128::EncodeLeb128;
 use serde::ser::{self, Serialize};
 
 pub struct Serializer {
@@ -12,53 +13,6 @@ where
     let mut serializer = Serializer { bytes: Vec::new() };
     value.serialize(&mut serializer)?;
     Ok(serializer.bytes)
-}
-
-trait EncodeLeb128 {
-    fn advance(self) -> (u8, Option<Self>)
-    where
-        Self: Sized;
-}
-
-macro_rules! impl_encode_leb_128 {
-    ($($ty:ty),*) => {
-        $(
-            impl EncodeLeb128 for $ty {
-                fn advance(self) -> (u8, Option<Self>) {
-                    let low = (self as u8) & 0x7F;
-                    match self >> 7 {
-                        0 => (low, None),
-                        shifted => (low, Some(shifted)),
-                    }
-                }
-            }
-        )*
-    }
-}
-
-impl_encode_leb_128!(u8, u16, u32, u64, u128, usize);
-impl_encode_leb_128!(i8, i16, i32, i64, i128, isize);
-
-impl Serializer {
-    fn serialize_leb128<N>(&mut self, mut value: N)
-    where
-        N: EncodeLeb128,
-    {
-        const REMAINING_BIT: u8 = 1 << 7;
-        loop {
-            let (low, next) = value.advance();
-            match next {
-                None => {
-                    self.bytes.push(low);
-                    break;
-                }
-                Some(next) => {
-                    self.bytes.push(REMAINING_BIT | low);
-                    value = next;
-                }
-            }
-        }
-    }
 }
 
 impl<'a> ser::Serializer for &'a mut Serializer {
@@ -79,52 +33,52 @@ impl<'a> ser::Serializer for &'a mut Serializer {
     }
 
     fn serialize_i8(self, v: i8) -> Result<Self::Ok, Self::Error> {
-        self.serialize_leb128(v);
+        self.bytes.push(v as u8);
         Ok(())
     }
 
     fn serialize_i16(self, v: i16) -> Result<Self::Ok, Self::Error> {
-        self.serialize_leb128(v);
+        v.encode_leb128(&mut self.bytes);
         Ok(())
     }
 
     fn serialize_i32(self, v: i32) -> Result<Self::Ok, Self::Error> {
-        self.serialize_leb128(v);
+        v.encode_leb128(&mut self.bytes);
         Ok(())
     }
 
     fn serialize_i64(self, v: i64) -> Result<Self::Ok, Self::Error> {
-        self.serialize_leb128(v);
+        v.encode_leb128(&mut self.bytes);
         Ok(())
     }
 
     fn serialize_i128(self, v: i128) -> Result<Self::Ok, Self::Error> {
-        self.serialize_leb128(v);
+        v.encode_leb128(&mut self.bytes);
         Ok(())
     }
 
     fn serialize_u8(self, v: u8) -> Result<Self::Ok, Self::Error> {
-        self.serialize_leb128(v);
+        self.bytes.push(v);
         Ok(())
     }
 
     fn serialize_u16(self, v: u16) -> Result<Self::Ok, Self::Error> {
-        self.serialize_leb128(v);
+        v.encode_leb128(&mut self.bytes);
         Ok(())
     }
 
     fn serialize_u32(self, v: u32) -> Result<Self::Ok, Self::Error> {
-        self.serialize_leb128(v);
+        v.encode_leb128(&mut self.bytes);
         Ok(())
     }
 
     fn serialize_u64(self, v: u64) -> Result<Self::Ok, Self::Error> {
-        self.serialize_leb128(v);
+        v.encode_leb128(&mut self.bytes);
         Ok(())
     }
 
     fn serialize_u128(self, v: u128) -> Result<Self::Ok, Self::Error> {
-        self.serialize_leb128(v);
+        v.encode_leb128(&mut self.bytes);
         Ok(())
     }
 
@@ -149,7 +103,7 @@ impl<'a> ser::Serializer for &'a mut Serializer {
     }
 
     fn serialize_bytes(self, v: &[u8]) -> Result<Self::Ok, Self::Error> {
-        self.serialize_leb128(v.len() as u64);
+        v.len().encode_leb128(&mut self.bytes);
         self.bytes.extend_from_slice(v);
         Ok(())
     }
@@ -213,13 +167,13 @@ impl<'a> ser::Serializer for &'a mut Serializer {
     }
 
     fn serialize_seq(self, len: Option<usize>) -> Result<Self::SerializeSeq, Self::Error> {
-        let len = len.ok_or(Error::MissingLength)?;
-        self.serialize_leb128(len as u64);
+        len.ok_or(Error::MissingLength)?
+            .encode_leb128(&mut self.bytes);
         Ok(self)
     }
 
     fn serialize_tuple(self, len: usize) -> Result<Self::SerializeTuple, Self::Error> {
-        self.serialize_leb128(len as u64);
+        let _ = len;
         Ok(self)
     }
 
@@ -229,7 +183,7 @@ impl<'a> ser::Serializer for &'a mut Serializer {
         len: usize,
     ) -> Result<Self::SerializeTupleStruct, Self::Error> {
         let _ = name;
-        self.serialize_leb128(len as u64);
+        let _ = len;
         Ok(self)
     }
 
@@ -240,15 +194,14 @@ impl<'a> ser::Serializer for &'a mut Serializer {
         variant: &'static str,
         len: usize,
     ) -> Result<Self::SerializeTupleVariant, Self::Error> {
-        let _ = (name, variant);
+        let _ = (name, variant, len);
         self.serialize_u32(variant_index)?;
-        self.serialize_leb128(len as u64);
         Ok(self)
     }
 
     fn serialize_map(self, len: Option<usize>) -> Result<Self::SerializeMap, Self::Error> {
         let len = len.ok_or(Error::MissingLength)?;
-        self.serialize_leb128(len as u64);
+        len.encode_leb128(&mut self.bytes);
         Ok(self)
     }
 
@@ -257,8 +210,7 @@ impl<'a> ser::Serializer for &'a mut Serializer {
         name: &'static str,
         len: usize,
     ) -> Result<Self::SerializeStruct, Self::Error> {
-        let _ = name;
-        self.serialize_leb128(len as u64);
+        let _ = (name, len);
         Ok(self)
     }
 
@@ -269,9 +221,8 @@ impl<'a> ser::Serializer for &'a mut Serializer {
         variant: &'static str,
         len: usize,
     ) -> Result<Self::SerializeStructVariant, Self::Error> {
-        let _ = (name, variant);
+        let _ = (name, variant, len);
         self.serialize_u32(variant_index)?;
-        self.serialize_leb128(len as u64);
         Ok(self)
     }
 }
@@ -415,7 +366,7 @@ mod tests {
             name: "John".into(),
         };
 
-        let expected = &[2, 42, 4, b'J', b'o', b'h', b'n'];
+        let expected = &[42, 4, b'J', b'o', b'h', b'n'];
         assert_eq!(to_bytes(&person).unwrap(), expected);
     }
 }

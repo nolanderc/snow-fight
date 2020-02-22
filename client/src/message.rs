@@ -1,10 +1,11 @@
 use crate::oneshot;
-use protocol::{Message, Request, Response};
+use futures::future;
+use protocol::{Channel, Event, Message, Request, RequestKind, ResponseKind};
 use std::collections::HashMap;
 use tokio::io::{self, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpStream, ToSocketAddrs};
 use tokio::runtime::{self, Runtime};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 
 const BROADCAST_CHANNEL: u32 = u32::max_value();
 
@@ -13,23 +14,15 @@ pub struct Connection {
     /// Handle to the runtime.
     handle: runtime::Handle,
 
-    requests: mpsc::Sender<(Request, ResponseCallback)>,
-    messages: mpsc::Receiver<Message>,
+    requests: mpsc::Sender<(RequestKind, ResponseCallback)>,
+    events: mpsc::Receiver<Event>,
 }
 
 pub struct ResponseHandle {
-    value: oneshot::Receiver<ServerResponse>,
+    value: oneshot::Receiver<ResponseKind>,
 }
 
-#[derive(Debug)]
-struct Frame<T> {
-    channel: u32,
-    data: T,
-}
-
-struct ResponseCallback(oneshot::Sender<ServerResponse>);
-
-type ServerResponse = Result<Response, String>;
+struct ResponseCallback(oneshot::Sender<ResponseKind>);
 
 impl Connection {
     /// Establish a new connection to the server at address `addr`.
@@ -43,10 +36,10 @@ impl Connection {
         let stream = runtime.block_on(TcpStream::connect(addr))?;
 
         let (requests_tx, requests_rx) = mpsc::channel(128);
-        let (broadcasts, messages) = mpsc::channel(128);
+        let (events_tx, events_rx) = mpsc::channel(128);
 
         std::thread::spawn(move || {
-            match runtime.block_on(Self::handle_messages(stream, requests_rx, broadcasts)) {
+            match runtime.block_on(Self::handle_stream(stream, requests_rx, events_tx)) {
                 Ok(()) => {}
                 Err(e) => log::error!("{}", e),
             }
@@ -55,14 +48,14 @@ impl Connection {
         Ok(Connection {
             handle,
             requests: requests_tx,
-            messages,
+            events: events_rx,
         })
     }
 
-    /// Attempt to the get the next message that was broadcasted from the server.
-    pub fn poll_message(&mut self) -> anyhow::Result<Option<Message>> {
-        match self.messages.try_recv() {
-            Ok(value) => Ok(Some(value)),
+    /// Attempt to the get the next event that was broadcasted from the server.
+    pub fn poll_event(&mut self) -> anyhow::Result<Option<Event>> {
+        match self.events.try_recv() {
+            Ok(event) => Ok(Some(event)),
             Err(mpsc::error::TryRecvError::Empty) => Ok(None),
             Err(mpsc::error::TryRecvError::Closed) => Err(anyhow!("connection was closed")),
         }
@@ -72,7 +65,7 @@ impl Connection {
     /// the response.
     pub fn send<T>(&mut self, request: T) -> ResponseHandle
     where
-        T: Into<Request>,
+        T: Into<RequestKind>,
     {
         let (sender, receiver) = oneshot::channel();
 
@@ -93,20 +86,20 @@ impl Connection {
     }
 
     /// Asynchronously send requests to, and receive messages from, the server.
-    async fn handle_messages(
+    async fn handle_stream(
         mut stream: TcpStream,
-        requests: mpsc::Receiver<(Request, ResponseCallback)>,
-        broadcasts: mpsc::Sender<Message>,
+        requests: mpsc::Receiver<(RequestKind, ResponseCallback)>,
+        broadcasts: mpsc::Sender<Event>,
     ) -> anyhow::Result<()> {
         let (mut reader, mut writer) = stream.split();
 
         let (messages_tx, messages_rx) = mpsc::channel(128);
         let (requests_tx, requests_rx) = mpsc::channel(128);
 
-        let result = futures::future::try_join3(
-            Self::route_messages(requests, messages_rx, requests_tx, broadcasts),
-            Self::handle_incoming(&mut reader, messages_tx),
-            Self::handle_outgoing(&mut writer, requests_rx),
+        let result = future::try_join3(
+            Self::route_streams(requests, messages_rx, requests_tx, broadcasts),
+            Self::handle_messages(&mut reader, messages_tx),
+            Self::handle_requests(&mut writer, requests_rx),
         )
         .await;
 
@@ -117,89 +110,104 @@ impl Connection {
 
     /// Route outgoing requests to the server and messages to a callback or the connection's inbox
     /// depending on which channel the server's message was sent across.
-    async fn route_messages(
-        mut requests: mpsc::Receiver<(Request, ResponseCallback)>,
-        mut messages: mpsc::Receiver<Frame<Message>>,
-        mut outbox: mpsc::Sender<Frame<Request>>,
-        mut broadcasts: mpsc::Sender<Message>,
+    async fn route_streams(
+        requests: mpsc::Receiver<(RequestKind, ResponseCallback)>,
+        messages: mpsc::Receiver<Message>,
+        outbox: mpsc::Sender<Request>,
+        events: mpsc::Sender<Event>,
     ) -> anyhow::Result<()> {
-        let mut callbacks = HashMap::<u32, _>::new();
-        let mut sequence = 0;
+        let callbacks = Mutex::new(HashMap::new());
 
-        loop {
-            tokio::select! {
-                Some((request, oneshot)) = requests.recv() => {
-                    let channel = sequence;
-                    callbacks.insert(channel, oneshot);
+        let result = future::try_join(
+            Self::route_requests(requests, outbox, &callbacks),
+            Self::route_messages(messages, events, &callbacks),
+        )
+        .await;
 
-                    while callbacks.contains_key(&sequence) {
-                        sequence = (sequence + 1) % (BROADCAST_CHANNEL / 2);
-                    }
+        log::info!("all request/message channels closed");
 
-                    let frame = Frame { channel, data: request };
-                    outbox.send(frame).await?;
-                },
-                Some(message) = messages.recv() => {
-                    if message.channel == BROADCAST_CHANNEL {
-                        broadcasts.send(message.data).await?;
-                    } else if let Some(oneshot) = callbacks.remove(&message.channel) {
-                        oneshot.try_send(message.data)?;
-                    } else {
-                        log::warn!("no callback registered for channel {}", message.channel);
-                    }
-                },
-                else => {
-                    log::info!("all request/message channels closed");
-                    break Ok(());
-                },
-            }
-        }
+        result.map(|_| {})
     }
 
-    /// Send a stream of requests to the server.
-    async fn handle_outgoing<W>(
-        mut writer: W,
-        mut requests: mpsc::Receiver<Frame<Request>>,
-    ) -> anyhow::Result<()>
-    where
-        W: AsyncWrite + Unpin,
-    {
-        while let Some(Frame { channel, data }) = requests.recv().await {
-            let text = serde_json::to_string(&data)?;
-            Self::send_string(&mut writer, channel, &text).await?;
+    /// Send requests to the server and setup callbacks.
+    async fn route_requests(
+        mut requests: mpsc::Receiver<(RequestKind, ResponseCallback)>,
+        mut outbox: mpsc::Sender<Request>,
+        callbacks: &Mutex<HashMap<Channel, ResponseCallback>>,
+    ) -> anyhow::Result<()> {
+        let mut sequence = Channel(0);
+
+        while let Some((kind, callback)) = requests.recv().await {
+            let channel = sequence;
+
+            {
+                let mut callbacks = callbacks.lock().await;
+                callbacks.insert(channel, callback);
+                while callbacks.contains_key(&sequence) {
+                    sequence.0 = (sequence.0 + 1) % (BROADCAST_CHANNEL / 2);
+                }
+            }
+
+            outbox.send(Request { channel, kind }).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Send messages from the server to the appropriate places.
+    async fn route_messages(
+        mut messages: mpsc::Receiver<Message>,
+        mut events: mpsc::Sender<Event>,
+        callbacks: &Mutex<HashMap<Channel, ResponseCallback>>,
+    ) -> anyhow::Result<()> {
+        while let Some(message) = messages.recv().await {
+            match message {
+                Message::Event(event) => events.send(event).await?,
+                Message::Response(response) => {
+                    match callbacks.lock().await.remove(&response.channel) {
+                        Some(callback) => callback.send(response.kind),
+                        None => {
+                            log::warn!("no callback registered for channel {}", response.channel.0)
+                        }
+                    }
+                }
+            }
         }
 
         Ok(())
     }
 
     /// Send a stream of requests to the server.
-    async fn handle_incoming<R>(
+    async fn handle_requests<W>(
+        mut writer: W,
+        mut requests: mpsc::Receiver<Request>,
+    ) -> anyhow::Result<()>
+    where
+        W: AsyncWrite + Unpin,
+    {
+        while let Some(request) = requests.recv().await {
+            let bytes = protocol::to_bytes(&request)?;
+            Self::send_bytes(&mut writer, &bytes).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Read a stream of messages from the server.
+    async fn handle_messages<R>(
         mut reader: R,
-        mut messages: mpsc::Sender<Frame<Message>>,
+        mut messages: mpsc::Sender<Message>,
     ) -> anyhow::Result<()>
     where
         R: AsyncRead + Unpin,
     {
         loop {
-            let Frame { channel, data } = Self::recv_string(&mut reader).await?;
-
-            let message = serde_json::from_str(&data)?;
-
-            let result = messages
-                .send(Frame {
-                    channel,
-                    data: message,
-                })
-                .await;
-
-            match result {
+            let bytes = Self::recv_bytes(&mut reader).await?;
+            let message = protocol::from_bytes(&bytes)?;
+            match messages.send(message).await {
                 Ok(()) => {}
-                Err(_) => {
-                    log::warn!(
-                        "failed to send incoming message on channel {} \
-                        because the channel has closed",
-                        channel
-                    );
+                Err(e) => {
+                    log::warn!("failed to send incoming message: {}", e);
                     return Ok(());
                 }
             };
@@ -207,50 +215,34 @@ impl Connection {
     }
 
     /// Send a message by sending the message's length followed by the data.
-    async fn send_string<W>(mut writer: W, channel: u32, message: &str) -> io::Result<()>
+    async fn send_bytes<W>(mut writer: W, message: &[u8]) -> io::Result<()>
     where
         W: AsyncWrite + Unpin,
     {
         let length = message.len() as u32;
 
-        log::debug!(
-            "Writing string on channel {} with length {}...",
-            channel,
-            length
-        );
+        log::debug!("Writing {} bytes...", length);
 
-        writer.write_all(&channel.to_be_bytes()).await?;
         writer.write_all(&length.to_be_bytes()).await?;
-        writer.write_all(message.as_bytes()).await?;
+        writer.write_all(message).await?;
 
         Ok(())
     }
 
     /// Receieve a string by reading its length followed by the data. If there are no mone strings,
     /// returns `None`.
-    async fn recv_string<R>(mut reader: R) -> io::Result<Frame<String>>
+    async fn recv_bytes<R>(mut reader: R) -> io::Result<Vec<u8>>
     where
         R: AsyncRead + Unpin,
     {
-        let channel = reader.read_u32().await?;
         let length = reader.read_u32().await? as usize;
 
-        log::debug!(
-            "Receieving string on channel {} with length {}...",
-            channel,
-            length
-        );
+        log::debug!("Receieving {} bytes...", length);
 
         let mut bytes = vec![0; length];
         reader.read_exact(&mut bytes).await?;
 
-        let text =
-            String::from_utf8(bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-
-        Ok(Frame {
-            channel,
-            data: text,
-        })
+        Ok(bytes)
     }
 }
 
@@ -263,13 +255,13 @@ pub enum PollError {
 
 impl ResponseHandle {
     /// Wait for the response to arrive.
-    pub fn wait(self) -> anyhow::Result<ServerResponse> {
+    pub fn wait(self) -> anyhow::Result<ResponseKind> {
         self.value.recv().map_err(Into::into)
     }
 
     #[allow(dead_code)]
     /// Check if the response has arrived, if so, return it.
-    pub fn poll(&mut self) -> Result<ServerResponse, PollError> {
+    pub fn poll(&mut self) -> Result<ResponseKind, PollError> {
         match self.value.try_recv() {
             Ok(response) => Ok(response),
             Err(oneshot::TryRecvError::Empty) => Err(PollError::Empty),
@@ -280,19 +272,7 @@ impl ResponseHandle {
 
 impl ResponseCallback {
     /// Attempt to send convert a message into a response and send it to the receiver if it was.
-    pub fn try_send(self, message: Message) -> anyhow::Result<()> {
-        let response = match message {
-            Message::Response(response) => Ok(response),
-            Message::Error(text) => Err(text),
-            Message::Event(_) => {
-                return Err(anyhow!(
-                    "Protocol violation: got Event in response to a Request"
-                ));
-            }
-        };
-
+    pub fn send(self, response: ResponseKind) {
         let _ = self.0.send(response);
-
-        Ok(())
     }
 }
