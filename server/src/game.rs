@@ -95,7 +95,7 @@ impl Game {
         loop {
             tokio::select! {
                 _ = timer.tick() => {
-                    log::debug!("tick");
+                    log::trace!("tick");
                     self.tick();
                 }
                 Some(command) = self.receiver.recv() => {

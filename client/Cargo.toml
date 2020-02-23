@@ -19,4 +19,4 @@ futures = "0.3.4"
 
 [dependencies.tokio]
 version = "0.2.11"
-features = ["io-util", "tcp", "rt-threaded", "sync", "macros"]
+features = ["udp", "rt-threaded", "sync", "macros"]

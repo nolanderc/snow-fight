@@ -2,8 +2,11 @@ use crate::oneshot;
 use futures::future;
 use protocol::{Channel, Event, Message, Request, RequestKind, ResponseKind};
 use std::collections::HashMap;
-use tokio::io::{self, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::net::{TcpStream, ToSocketAddrs};
+use std::net::Ipv4Addr;
+use tokio::net::{
+    udp::{RecvHalf, SendHalf},
+    ToSocketAddrs, UdpSocket,
+};
 use tokio::runtime::{self, Runtime};
 use tokio::sync::{mpsc, Mutex};
 
@@ -33,13 +36,15 @@ impl Connection {
         let mut runtime = Runtime::new()?;
         let handle = runtime.handle().clone();
 
-        let stream = runtime.block_on(TcpStream::connect(addr))?;
+        let local_addr = (Ipv4Addr::new(0, 0, 0, 0), 0u16);
+        let socket = runtime.block_on(UdpSocket::bind(local_addr))?;
+        runtime.block_on(socket.connect(addr))?;
 
         let (requests_tx, requests_rx) = mpsc::channel(128);
         let (events_tx, events_rx) = mpsc::channel(128);
 
         std::thread::spawn(move || {
-            match runtime.block_on(Self::handle_stream(stream, requests_rx, events_tx)) {
+            match runtime.block_on(Self::handle_stream(socket, requests_rx, events_tx)) {
                 Ok(()) => {}
                 Err(e) => log::error!("{}", e),
             }
@@ -87,19 +92,19 @@ impl Connection {
 
     /// Asynchronously send requests to, and receive messages from, the server.
     async fn handle_stream(
-        mut stream: TcpStream,
+        stream: UdpSocket,
         requests: mpsc::Receiver<(RequestKind, ResponseCallback)>,
         broadcasts: mpsc::Sender<Event>,
     ) -> anyhow::Result<()> {
-        let (mut reader, mut writer) = stream.split();
+        let (receiver, sender) = stream.split();
 
         let (messages_tx, messages_rx) = mpsc::channel(128);
         let (requests_tx, requests_rx) = mpsc::channel(128);
 
         let result = future::try_join3(
             Self::route_streams(requests, messages_rx, requests_tx, broadcasts),
-            Self::handle_messages(&mut reader, messages_tx),
-            Self::handle_requests(&mut writer, requests_rx),
+            Self::handle_messages(receiver, messages_tx),
+            Self::handle_requests(sender, requests_rx),
         )
         .await;
 
@@ -178,31 +183,33 @@ impl Connection {
     }
 
     /// Send a stream of requests to the server.
-    async fn handle_requests<W>(
-        mut writer: W,
+    async fn handle_requests(
+        mut sender: SendHalf,
         mut requests: mpsc::Receiver<Request>,
-    ) -> anyhow::Result<()>
-    where
-        W: AsyncWrite + Unpin,
-    {
+    ) -> anyhow::Result<()> {
         while let Some(request) = requests.recv().await {
             let bytes = protocol::to_bytes(&request)?;
-            Self::send_bytes(&mut writer, &bytes).await?;
+
+            log::debug!("sending {} bytes...", bytes.len());
+
+            sender.send(&bytes).await?;
         }
 
         Ok(())
     }
 
     /// Read a stream of messages from the server.
-    async fn handle_messages<R>(
-        mut reader: R,
+    async fn handle_messages(
+        mut receiver: RecvHalf,
         mut messages: mpsc::Sender<Message>,
-    ) -> anyhow::Result<()>
-    where
-        R: AsyncRead + Unpin,
-    {
+    ) -> anyhow::Result<()> {
+        let mut buffer = vec![0; 1024];
         loop {
-            let bytes = Self::recv_bytes(&mut reader).await?;
+            let len = receiver.recv(&mut buffer).await?;
+            let bytes = &buffer[..len];
+
+            log::debug!("received {} bytes...", bytes.len());
+
             let message = protocol::from_bytes(&bytes)?;
             match messages.send(message).await {
                 Ok(()) => {}
@@ -212,37 +219,6 @@ impl Connection {
                 }
             };
         }
-    }
-
-    /// Send a message by sending the message's length followed by the data.
-    async fn send_bytes<W>(mut writer: W, message: &[u8]) -> io::Result<()>
-    where
-        W: AsyncWrite + Unpin,
-    {
-        let length = message.len() as u32;
-
-        log::debug!("Writing {} bytes...", length);
-
-        writer.write_all(&length.to_be_bytes()).await?;
-        writer.write_all(message).await?;
-
-        Ok(())
-    }
-
-    /// Receieve a string by reading its length followed by the data. If there are no mone strings,
-    /// returns `None`.
-    async fn recv_bytes<R>(mut reader: R) -> io::Result<Vec<u8>>
-    where
-        R: AsyncRead + Unpin,
-    {
-        let length = reader.read_u32().await? as usize;
-
-        log::debug!("Receieving {} bytes...", length);
-
-        let mut bytes = vec![0; length];
-        reader.read_exact(&mut bytes).await?;
-
-        Ok(bytes)
     }
 }
 

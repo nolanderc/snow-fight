@@ -19,13 +19,11 @@ mod message;
 mod options;
 
 use anyhow::Context;
-use futures::stream::StreamExt;
-use protocol::{Event, Request, RequestKind};
+use protocol::RequestKind;
 use structopt::StructOpt;
-use tokio::io::AsyncWrite;
-use tokio::net::{TcpListener, TcpStream};
 
 use game::{Game, GameHandle, PlayerHandle};
+use message::{Connection, Listener};
 use options::Options;
 
 type Result<T> = anyhow::Result<T>;
@@ -43,7 +41,7 @@ async fn main() -> Result<()> {
 
     let server = Server::new(options, handle).await?;
 
-    server.listen().await
+    server.run().await
 }
 
 /// Setup logging facilities.
@@ -55,47 +53,41 @@ fn setup_logger(options: &Options) {
 
 #[derive(Debug)]
 struct Server {
-    listener: TcpListener,
+    listener: Listener,
     game: GameHandle,
 }
 
 impl Server {
     pub async fn new(options: &Options, game: GameHandle) -> Result<Server> {
-        let listener = TcpListener::bind((options.addr, options.port)).await?;
+        let (listener, addr) = Listener::bind((options.addr, options.port)).await?;
+
+        let addr = addr
+            .map(|a| a.to_string())
+            .unwrap_or_else(|| "<unknown>".into());
+        log::info!("listening for connections on [{}]", addr);
+
         Ok(Server { listener, game })
     }
 
-    /// Listen for incoming connections in an endless loop.
-    pub async fn listen(mut self) -> ! {
-        let addr = match self.listener.local_addr() {
-            Ok(addr) => addr.to_string(),
-            Err(e) => e.to_string(),
-        };
-
-        log::info!("Listening for players on [{}]", addr);
-
+    /// Handle incoming connections in an endless loop.
+    pub async fn run(mut self) -> ! {
         loop {
-            let (stream, peer_addr) = match self.listener.accept().await {
-                Ok(incoming) => incoming,
-                Err(error) => {
-                    log::error!("Failed to accept connection: {:#}", error);
-                    continue;
-                }
+            let conn = match self.listener.accept().await {
+                Some(conn) => conn,
+                None => panic!("socket closed"),
             };
 
-            log::info!("Client connected from [{}]", peer_addr);
+            let addr = conn.addr();
+
+            log::info!("Client connected from [{}]", addr);
 
             let game = self.game.clone();
 
             tokio::spawn(async move {
-                match handle_connection(stream, game).await {
-                    Ok(()) => log::info!("Done with the client [{}]", peer_addr),
+                match handle_connection(conn, game).await {
+                    Ok(()) => log::info!("Done with the client [{}]", addr),
                     Err(error) => {
-                        log::error!(
-                            "An error occured with the client [{}]: {:?}",
-                            peer_addr,
-                            error
-                        );
+                        log::error!("An error occured with the client [{}]: {:?}", addr, error);
                     }
                 }
             });
@@ -104,12 +96,12 @@ impl Server {
 }
 
 /// Handle an incoming connection.
-async fn handle_connection(mut stream: TcpStream, mut game: GameHandle) -> Result<()> {
-    let mut player = initialize_client(&mut stream, &mut game)
+async fn handle_connection(mut conn: Connection, mut game: GameHandle) -> Result<()> {
+    let mut player = initialize_client(&mut conn, &mut game)
         .await
         .context("failed to initialize client")?;
 
-    let result = handle_client(&mut stream, &mut game, &mut player)
+    let result = handle_client(&mut conn, &mut game, &mut player)
         .await
         .context("failed to serve client");
 
@@ -121,10 +113,12 @@ async fn handle_connection(mut stream: TcpStream, mut game: GameHandle) -> Resul
 }
 
 /// Wait for the client to initialize the connection.
-async fn initialize_client(stream: &mut TcpStream, game: &mut GameHandle) -> Result<PlayerHandle> {
-    let request = message::recv(stream)
+async fn initialize_client(conn: &mut Connection, game: &mut GameHandle) -> Result<PlayerHandle> {
+    let request = conn
+        .recv_request()
         .await
-        .context("failed to receive init request")?;
+        .context("failed to receive init request")?
+        .ok_or_else(|| anyhow!("expected a request, found EOF"))?;
 
     let init = match request.kind {
         RequestKind::Init(init) => init,
@@ -145,7 +139,7 @@ async fn initialize_client(stream: &mut TcpStream, game: &mut GameHandle) -> Res
         player_id: player.id(),
     };
 
-    message::send_response(stream, (request.channel, connect))
+    conn.send_response((request.channel, connect).into())
         .await
         .context("failed to send connection response")?;
 
@@ -154,61 +148,28 @@ async fn initialize_client(stream: &mut TcpStream, game: &mut GameHandle) -> Res
 
 /// Handle all messages coming from/to the client.
 async fn handle_client(
-    stream: &mut TcpStream,
+    conn: &mut Connection,
     game: &mut GameHandle,
     player: &mut PlayerHandle,
 ) -> Result<()> {
-    let (mut reader, mut writer) = stream.split();
-
-    let requests = futures::stream::try_unfold(&mut reader, |reader| async move {
-        match message::recv(reader).await {
-            Ok(request) => Ok(Some((request, reader))),
-            Err(e) => Err(e),
-        }
-    });
-
-    tokio::pin!(requests);
-
     loop {
         tokio::select! {
-            request = requests.next() => match request {
+            request = conn.recv_request() => match request.context("bad request")? {
                 None => break Ok(()),
                 Some(request) => {
-                    let request = request.context("bad request")?;
-                    handle_request(&mut writer, request, game, player).await?;
+                    let response = game.handle_request(request, player.id()).await?;
+                    conn.send_response(response).await?;
                 }
             },
 
             event = player.poll_event() => match event {
                 None => break Err(anyhow!("event channel closed")),
                 Some(event) => {
-                    handle_event(&mut writer, event).await?;
+                    conn.send_event(event).await?;
                 }
             },
 
             else => {}
         };
     }
-}
-
-async fn handle_request<W>(
-    writer: &mut W,
-    request: Request,
-    game: &mut GameHandle,
-    player: &PlayerHandle,
-) -> Result<()>
-where
-    W: AsyncWrite + Unpin,
-{
-    let response = game.handle_request(request, player.id()).await?;
-    message::send_response(writer, response).await?;
-    Ok(())
-}
-
-async fn handle_event<W>(writer: &mut W, event: Event) -> Result<()>
-where
-    W: AsyncWrite + Unpin,
-{
-    message::send_event(writer, event).await?;
-    Ok(())
 }
