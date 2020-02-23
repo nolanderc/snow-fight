@@ -113,7 +113,7 @@ impl Game {
             self.broadcast(event);
         }
 
-        self.time += 1;
+        self.time = self.time.wrapping_add(1);
     }
 
     fn broadcast<T>(&mut self, kind: T)

@@ -11,7 +11,7 @@ mod options;
 use message::Connection;
 use options::Options;
 
-use protocol::{Init, RequestKind};
+use protocol::{EventKind, Init, RequestKind};
 use std::io::BufRead;
 use std::sync::mpsc::channel;
 use std::thread;
@@ -58,7 +58,9 @@ fn main() -> anyhow::Result<()> {
 
     loop {
         while let Some(event) = connection.poll_event()? {
-            log::info!("Event: {:?}", event);
+            match event.kind {
+                EventKind::Chat(chat) => println!("{} said: {}", chat.player, chat.message),
+            }
         }
 
         while let Ok(chat) = chats.try_recv() {
