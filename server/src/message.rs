@@ -9,7 +9,7 @@ use tokio::net::{
 use tokio::sync::mpsc;
 
 /// The maximum number of bytes that may be received in a single datagram.
-const RECV_BUFFER_SIZE: usize = 2048;
+const MAX_PACKET_SIZE: usize = 1 << 16;
 
 /// A connection to a single client.
 #[derive(Debug)]
@@ -125,7 +125,7 @@ impl Listener {
         mut connections: mpsc::Sender<Connection>,
         messages: mpsc::Sender<TargetedMessage>,
     ) -> crate::Result<()> {
-        let mut buffer = vec![0; RECV_BUFFER_SIZE];
+        let mut buffer = vec![0; MAX_PACKET_SIZE];
         let mut clients = HashMap::new();
 
         loop {

@@ -10,7 +10,8 @@ use tokio::net::{
 use tokio::runtime::{self, Runtime};
 use tokio::sync::{mpsc, Mutex};
 
-const BROADCAST_CHANNEL: u32 = u32::max_value();
+/// The maximum UDP packet size (in bytes).
+const MAX_PACKET_SIZE: usize = 1 << 16;
 
 /// A connection to the game server.
 pub struct Connection {
@@ -149,7 +150,7 @@ impl Connection {
                 let mut callbacks = callbacks.lock().await;
                 callbacks.insert(channel, callback);
                 while callbacks.contains_key(&sequence) {
-                    sequence.0 = (sequence.0 + 1) % (BROADCAST_CHANNEL / 2);
+                    sequence.0 = sequence.0.wrapping_add(1);
                 }
             }
 
@@ -203,7 +204,7 @@ impl Connection {
         mut receiver: RecvHalf,
         mut messages: mpsc::Sender<Message>,
     ) -> anyhow::Result<()> {
-        let mut buffer = vec![0; 1024];
+        let mut buffer = vec![0; MAX_PACKET_SIZE];
         loop {
             let len = receiver.recv(&mut buffer).await?;
             let bytes = &buffer[..len];
