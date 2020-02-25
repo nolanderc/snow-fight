@@ -16,6 +16,8 @@ protocol = { path = "../protocol" }
 serde_json = "1.0.47"
 serde = "1.0.104"
 futures = "0.3.4"
+rand = "0.7.3"
+socket = { path = "../socket" }
 
 [dependencies.tokio]
 version = "0.2.11"

@@ -9,7 +9,9 @@ edition = "2018"
 [dependencies]
 derive_more = "0.99.2"
 thiserror = "1.0.11"
+bitflags = "1.2.1"
 
 [dependencies.serde]
 version = "1.0.104"
 features = ["derive"]
+

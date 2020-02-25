@@ -1,17 +1,11 @@
 use crate::oneshot;
 use futures::future;
 use protocol::{Channel, Event, Message, Request, RequestKind, ResponseKind};
+use socket::{RecvHalf, SendHalf, Socket};
 use std::collections::HashMap;
-use std::net::Ipv4Addr;
-use tokio::net::{
-    udp::{RecvHalf, SendHalf},
-    ToSocketAddrs, UdpSocket,
-};
+use tokio::net::ToSocketAddrs;
 use tokio::runtime::{self, Runtime};
 use tokio::sync::{mpsc, Mutex};
-
-/// The maximum UDP packet size (in bytes).
-const MAX_PACKET_SIZE: usize = 1 << 16;
 
 /// A connection to the game server.
 pub struct Connection {
@@ -37,9 +31,7 @@ impl Connection {
         let mut runtime = Runtime::new()?;
         let handle = runtime.handle().clone();
 
-        let local_addr = (Ipv4Addr::new(0, 0, 0, 0), 0u16);
-        let socket = runtime.block_on(UdpSocket::bind(local_addr))?;
-        runtime.block_on(socket.connect(addr))?;
+        let socket = runtime.block_on(Socket::connect(addr))?;
 
         let (requests_tx, requests_rx) = mpsc::channel(128);
         let (events_tx, events_rx) = mpsc::channel(128);
@@ -47,7 +39,7 @@ impl Connection {
         std::thread::spawn(move || {
             match runtime.block_on(Self::handle_stream(socket, requests_rx, events_tx)) {
                 Ok(()) => {}
-                Err(e) => log::error!("{}", e),
+                Err(e) => log::error!("{:#}", e),
             }
         });
 
@@ -93,44 +85,25 @@ impl Connection {
 
     /// Asynchronously send requests to, and receive messages from, the server.
     async fn handle_stream(
-        stream: UdpSocket,
+        socket: Socket,
         requests: mpsc::Receiver<(RequestKind, ResponseCallback)>,
         broadcasts: mpsc::Sender<Event>,
     ) -> anyhow::Result<()> {
-        let (receiver, sender) = stream.split();
+        let (sender, receiver) = socket.split();
 
         let (messages_tx, messages_rx) = mpsc::channel(128);
         let (requests_tx, requests_rx) = mpsc::channel(128);
+        let callbacks = Mutex::new(HashMap::new());
 
-        let result = future::try_join3(
-            Self::route_streams(requests, messages_rx, requests_tx, broadcasts),
-            Self::handle_messages(receiver, messages_tx),
-            Self::handle_requests(sender, requests_rx),
+        let result = future::try_join4(
+            Self::route_requests(requests, requests_tx, &callbacks),
+            Self::route_messages(messages_rx, broadcasts, &callbacks),
+            Self::send_requests(sender, requests_rx),
+            Self::recv_messages(receiver, messages_tx),
         )
         .await;
 
         log::info!("connection closed");
-
-        result.map(|_| {})
-    }
-
-    /// Route outgoing requests to the server and messages to a callback or the connection's inbox
-    /// depending on which channel the server's message was sent across.
-    async fn route_streams(
-        requests: mpsc::Receiver<(RequestKind, ResponseCallback)>,
-        messages: mpsc::Receiver<Message>,
-        outbox: mpsc::Sender<Request>,
-        events: mpsc::Sender<Event>,
-    ) -> anyhow::Result<()> {
-        let callbacks = Mutex::new(HashMap::new());
-
-        let result = future::try_join(
-            Self::route_requests(requests, outbox, &callbacks),
-            Self::route_messages(messages, events, &callbacks),
-        )
-        .await;
-
-        log::info!("all request/message channels closed");
 
         result.map(|_| {})
     }
@@ -184,42 +157,44 @@ impl Connection {
     }
 
     /// Send a stream of requests to the server.
-    async fn handle_requests(
+    async fn send_requests(
         mut sender: SendHalf,
         mut requests: mpsc::Receiver<Request>,
     ) -> anyhow::Result<()> {
         while let Some(request) = requests.recv().await {
             let bytes = protocol::to_bytes(&request)?;
-
-            log::debug!("sending {} bytes...", bytes.len());
-
-            sender.send(&bytes).await?;
+            sender.send(bytes, true).await?;
         }
+
+        log::debug!("closing sender...");
 
         Ok(())
     }
 
     /// Read a stream of messages from the server.
-    async fn handle_messages(
+    async fn recv_messages(
         mut receiver: RecvHalf,
         mut messages: mpsc::Sender<Message>,
     ) -> anyhow::Result<()> {
-        let mut buffer = vec![0; MAX_PACKET_SIZE];
-        loop {
-            let len = receiver.recv(&mut buffer).await?;
-            let bytes = &buffer[..len];
-
+        while let Some(bytes) = receiver.recv().await {
             log::debug!("received {} bytes...", bytes.len());
 
-            let message = protocol::from_bytes(&bytes)?;
-            match messages.send(message).await {
-                Ok(()) => {}
-                Err(e) => {
-                    log::warn!("failed to send incoming message: {}", e);
-                    return Ok(());
-                }
-            };
+            match protocol::from_bytes(&bytes) {
+                Err(e) => log::warn!("malformed message: {:#}", e),
+                Ok(message) => match messages.send(message).await {
+                    Ok(()) => {}
+                    Err(_) => {
+                        log::warn!("failed to dispatch message, channel closed");
+                        log::info!("closing receiver...");
+                        return Ok(());
+                    }
+                },
+            }
         }
+
+        log::debug!("closing receiver...");
+
+        Ok(())
     }
 }
 

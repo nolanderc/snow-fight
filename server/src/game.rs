@@ -107,7 +107,14 @@ impl Game {
     }
 
     fn tick(&mut self) {
-        let events = Vec::<EventKind>::new();
+        let mut events = Vec::<EventKind>::new();
+
+        /*
+        events.push(EventKind::Chat(Chat {
+            player: PlayerId(0),
+            message: "hello".chars().cycle().take(100_000).collect(),
+        }));
+        */
 
         for event in events {
             self.broadcast(event);

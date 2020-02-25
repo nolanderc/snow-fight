@@ -59,7 +59,13 @@ fn main() -> anyhow::Result<()> {
     loop {
         while let Some(event) = connection.poll_event()? {
             match event.kind {
-                EventKind::Chat(chat) => println!("{} said: {}", chat.player, chat.message),
+                EventKind::Chat(chat) => {
+                    if chat.message.len() < 500 {
+                        println!("{} said: {}", chat.player, chat.message);
+                    } else {
+                        println!("{} said: <{} bytes>", chat.player, chat.message.len());
+                    }
+                },
             }
         }
 

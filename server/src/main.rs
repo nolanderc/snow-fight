@@ -39,9 +39,11 @@ async fn main() -> Result<()> {
 
     tokio::spawn(async move { game.run().await });
 
-    let server = Server::new(options, handle).await?;
-
-    server.run().await
+    loop {
+        let server = Server::new(options, handle.clone()).await?;
+        let error = server.run().await;
+        log::error!("server crashed: {}", error);
+    }
 }
 
 /// Setup logging facilities.
@@ -70,11 +72,11 @@ impl Server {
     }
 
     /// Handle incoming connections in an endless loop.
-    pub async fn run(mut self) -> ! {
+    pub async fn run(mut self) -> anyhow::Error {
         loop {
             let conn = match self.listener.accept().await {
                 Some(conn) => conn,
-                None => panic!("socket closed"),
+                None => break anyhow!("socket closed"),
             };
 
             let addr = conn.addr();

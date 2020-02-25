@@ -31,7 +31,7 @@ pub enum Message {
     Response(Response),
 }
 
-/// The id of a channel in which requests and responses are sent. 
+/// The id of a channel in which requests and responses are sent.
 #[derive(Debug, Copy, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Channel(pub u32);
 
