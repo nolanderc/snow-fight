@@ -15,4 +15,4 @@ rand = "0.7.3"
 
 [dependencies.tokio]
 version = "0.2"
-features = ["udp", "sync", "rt-core", "macros"]
+features = ["udp", "sync", "rt-core", "macros", "time", "stream"]

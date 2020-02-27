@@ -29,7 +29,7 @@ fn main() -> anyhow::Result<()> {
         options.port
     );
 
-    let mut connection = Connection::establish((options.addr, options.port))?;
+    let mut connection = Connection::establish((options.addr, options.port).into())?;
 
     let init = connection.send(Init {
         nickname: "Zynapse".to_owned(),
@@ -70,7 +70,17 @@ fn main() -> anyhow::Result<()> {
         }
 
         while let Ok(chat) = chats.try_recv() {
-            connection.send(RequestKind::SendChat(chat));
+            if chat == "echo" {
+                let mut text = String::new();
+                for i in 0..10000 {
+                    use std::fmt::Write;
+                    write!(text, "echo {} ", i).unwrap();
+                }
+
+                connection.send(RequestKind::SendChat(text));
+            } else {
+                connection.send(RequestKind::SendChat(chat));
+            }
         }
 
         std::thread::sleep(std::time::Duration::from_secs(1) / 60);

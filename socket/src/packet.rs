@@ -1,5 +1,4 @@
 use bitflags::bitflags;
-use std::collections::HashMap;
 use std::convert::TryInto;
 use thiserror::Error;
 
@@ -49,28 +48,28 @@ bitflags! {
 
 /// The header of every packet.
 #[derive(Debug, Copy, Clone)]
-pub struct Header {
+pub(crate) struct Header {
     pub flags: Flags,
     pub chunk: u8,
     pub seq: u16,
 }
 
-/// Builds multiple sequences from an unordered stream.
-#[derive(Clone, Default)]
-pub struct SequenceBuilder {
-    sequences: HashMap<u16, Sequence>,
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct ChunkId {
+    pub chunk: u8,
+    pub seq: u16,
 }
 
 /// A sequence if chunks that is being partially constructed by packets.
 #[derive(Clone)]
-pub struct Sequence {
+pub(crate) struct Sequence {
     max_chunks: usize,
     payload: Vec<u8>,
     received: [bool; MAX_CHUNK_COUNT],
 }
 
 /// Split a payload into a sequence of chunks.
-pub fn into_chunks(sequence: u16, payload: &[u8]) -> Result<Vec<(Header, &[u8])>> {
+pub(crate) fn into_chunks(sequence: u16, payload: &[u8]) -> Result<Vec<(Header, &[u8])>> {
     let mut payloads = payload
         .chunks(MAX_CHUNK_SIZE)
         .enumerate()
@@ -110,9 +109,16 @@ impl Header {
     pub fn needs_ack(self) -> bool {
         self.flags.contains(Flags::NEEDS_ACK)
     }
-    
+
     pub fn is_ack(self) -> bool {
         self.flags.contains(Flags::ACK)
+    }
+
+    pub fn chunk_id(self) -> ChunkId {
+        ChunkId {
+            chunk: self.chunk,
+            seq: self.seq,
+        }
     }
 
     /// Serialize the header into a stream of bytes
@@ -149,33 +155,6 @@ impl Default for Sequence {
     }
 }
 
-impl SequenceBuilder {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Attempty to reconstruct a payload from a chunk.
-    ///
-    /// Returns `Ok(None)` in case the payload needs additional chunks to complete.
-    pub fn try_reconstruct_payload(
-        &mut self,
-        header: Header,
-        chunk: &[u8],
-    ) -> Result<Option<Vec<u8>>> {
-        let sequence = self
-            .sequences
-            .entry(header.seq)
-            .or_insert_with(Sequence::new);
-        sequence.insert_chunk(header, chunk)?;
-        if sequence.is_complete() {
-            let sequence = self.sequences.remove(&header.seq).unwrap();
-            Ok(Some(sequence.payload()))
-        } else {
-            Ok(None)
-        }
-    }
-}
-
 impl Sequence {
     pub fn new() -> Self {
         Sequence {
@@ -196,16 +175,11 @@ impl Sequence {
         self.max_chunks = 1 + chunk as usize;
     }
 
-    /// Determines if the sequence is complete. 
+    /// Determines if the sequence is complete.
     pub fn is_complete(&self) -> bool {
         self.received[0..self.max_chunks]
             .iter()
             .all(|received| *received)
-    }
-
-    /// Returns true if a specific chunk of this sequence has been returned.
-    pub fn has_received(&self, chunk: u8) -> bool {
-        self.received[chunk as usize]
     }
 
     /// Adds a chunk to the sequence.

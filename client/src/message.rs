@@ -3,7 +3,7 @@ use futures::future;
 use protocol::{Channel, Event, Message, Request, RequestKind, ResponseKind};
 use socket::{RecvHalf, SendHalf, Socket};
 use std::collections::HashMap;
-use tokio::net::ToSocketAddrs;
+use std::net::SocketAddr;
 use tokio::runtime::{self, Runtime};
 use tokio::sync::{mpsc, Mutex};
 
@@ -24,9 +24,7 @@ struct ResponseCallback(oneshot::Sender<ResponseKind>);
 
 impl Connection {
     /// Establish a new connection to the server at address `addr`.
-    pub fn establish<T>(addr: T) -> anyhow::Result<Connection>
-    where
-        T: ToSocketAddrs,
+    pub fn establish(addr: SocketAddr) -> anyhow::Result<Connection>
     {
         let mut runtime = Runtime::new()?;
         let handle = runtime.handle().clone();
@@ -38,7 +36,7 @@ impl Connection {
 
         std::thread::spawn(move || {
             match runtime.block_on(Self::handle_stream(socket, requests_rx, events_tx)) {
-                Ok(()) => {}
+                Ok(()) => log::info!("connection closed"),
                 Err(e) => log::error!("{:#}", e),
             }
         });
@@ -95,17 +93,14 @@ impl Connection {
         let (requests_tx, requests_rx) = mpsc::channel(128);
         let callbacks = Mutex::new(HashMap::new());
 
-        let result = future::try_join4(
+        future::try_join4(
+            Self::recv_messages(receiver, messages_tx),
+            Self::send_requests(sender, requests_rx),
             Self::route_requests(requests, requests_tx, &callbacks),
             Self::route_messages(messages_rx, broadcasts, &callbacks),
-            Self::send_requests(sender, requests_rx),
-            Self::recv_messages(receiver, messages_tx),
         )
-        .await;
-
-        log::info!("connection closed");
-
-        result.map(|_| {})
+        .await
+        .map(|_| {})
     }
 
     /// Send requests to the server and setup callbacks.
@@ -130,6 +125,8 @@ impl Connection {
             outbox.send(Request { channel, kind }).await?;
         }
 
+        log::info!("closing request router...");
+
         Ok(())
     }
 
@@ -146,12 +143,15 @@ impl Connection {
                     match callbacks.lock().await.remove(&response.channel) {
                         Some(callback) => callback.send(response.kind),
                         None => {
+                            dbg!(&response);
                             log::warn!("no callback registered for channel {}", response.channel.0)
                         }
                     }
                 }
             }
         }
+
+        log::info!("closing message router...");
 
         Ok(())
     }
@@ -176,7 +176,7 @@ impl Connection {
         mut receiver: RecvHalf,
         mut messages: mpsc::Sender<Message>,
     ) -> anyhow::Result<()> {
-        while let Some(bytes) = receiver.recv().await {
+        while let Some(bytes) = receiver.recv().await? {
             log::debug!("received {} bytes...", bytes.len());
 
             match protocol::from_bytes(&bytes) {

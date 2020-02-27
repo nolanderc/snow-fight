@@ -185,7 +185,7 @@ impl Listener {
         mut receiver: RecvHalf,
         mut requests: mpsc::Sender<RawRequest>,
     ) -> crate::Result<()> {
-        while let Some((bytes, addr)) = receiver.recv_from().await {
+        while let Some((bytes, addr)) = receiver.recv_from().await? {
             log::debug!("received {} bytes from [{}]", bytes.len(), addr);
 
             if let Err(e) = requests.send((SerialRequest(bytes), addr)).await {
