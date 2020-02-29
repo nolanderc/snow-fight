@@ -8,3 +8,7 @@ members = [
     "socket",
 ]
 
+
+[patch.crates-io]
+tokio = { path = 'tokio/tokio', branch = 'release-0.2.13' }
+
