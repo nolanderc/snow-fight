@@ -17,10 +17,16 @@ pub enum Error {
 
     #[error("invalid packet size, needs at least {HEADER_SIZE} bytes")]
     MissingHeader,
+
+    #[error("found the final chunk id {MAX_CHUNK_INDEX} without the LAST_CHUNK flag")]
+    MissingLastChunk,
 }
 
 /// The maximum number of chunks in a sequence.
-pub const MAX_CHUNK_COUNT: usize = u8::max_value() as usize;
+pub const MAX_CHUNK_INDEX: u8 = u8::max_value();
+
+/// The maximum number of chunks in a sequence.
+pub const MAX_CHUNK_COUNT: usize = MAX_CHUNK_INDEX as usize + 1;
 
 /// The maximum size (in bytes) of a chunk's payload.
 // The MTU is 576 bytes minimum. Subtract the largest IP header (60 bytes) and UDP header (8 bytes)
@@ -43,6 +49,9 @@ bitflags! {
 
         /// This is the last chunk of the message.
         const LAST_CHUNK = 1 << 2;
+
+        /// The connection has been closed.
+        const CLOSE = 1 << 3;
     }
 }
 
@@ -106,12 +115,25 @@ impl Header {
         }
     }
 
+    /// Close the packet stream.
+    pub fn close() -> Self {
+        Header {
+            flags: Flags::CLOSE | Flags::LAST_CHUNK,
+            seq: 0,
+            chunk: 0,
+        }
+    }
+
     pub fn needs_ack(self) -> bool {
         self.flags.contains(Flags::NEEDS_ACK)
     }
 
     pub fn is_ack(self) -> bool {
         self.flags.contains(Flags::ACK)
+    }
+
+    pub fn is_close(self) -> bool {
+        self.flags.contains(Flags::CLOSE)
     }
 
     pub fn chunk_id(self) -> ChunkId {
@@ -138,13 +160,13 @@ impl Header {
     }
 
     /// Extract the header from a stream of bytes, retruns the remaining bytes.
-    pub fn extract(bytes: &[u8]) -> Result<(Header, &[u8])> {
+    pub fn extract(bytes: &[u8]) -> Option<(Header, &[u8])> {
         if bytes.len() < 4 {
-            Err(Error::MissingHeader)
+            None
         } else {
-            let (header, had) = bytes.split_at(4);
+            let (header, body) = bytes.split_at(4);
             let header = Header::deserialize(header.try_into().unwrap());
-            Ok((header, had))
+            Some((header, body))
         }
     }
 }
@@ -196,9 +218,15 @@ impl Sequence {
             return Err(Error::ChunkNotFull {
                 actual: chunk.len(),
             });
+        } else if header.chunk == u8::max_value() {
+            return Err(Error::MissingLastChunk);
         }
 
         let chunk_index = header.chunk as usize;
+
+        if self.received[chunk_index] {
+            return Ok(())
+        }
 
         self.received[chunk_index] = true;
 

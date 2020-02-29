@@ -1,200 +1,215 @@
-use futures::future;
+use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
-use tokio::net::{ToSocketAddrs, UdpSocket};
+use tokio::net::{udp, ToSocketAddrs, UdpSocket};
 use tokio::sync::mpsc;
 
-mod receiver;
-mod sender;
+mod connection;
 
 pub mod error;
-pub mod packet;
+mod packet;
+
+pub use crate::connection::*;
 
 use crate::error::{Error, Result};
-use crate::receiver::RecvState;
-use crate::sender::SendState;
-use crate::packet::ChunkId;
+
+/// The percentage of artificial packet loss to add (for testing purposes).
+const PACKET_LOSS: f64 = 0.00;
+
+type RawPacket = Vec<u8>;
 
 #[derive(Debug)]
-pub struct Socket {
-    send: SendHalf,
-    recv: RecvHalf,
+pub struct Listener {
+    connections: mpsc::Receiver<Connection>,
     addr: Option<SocketAddr>,
 }
 
-#[derive(Debug)]
-pub struct SendHalf {
-    payloads: mpsc::Sender<OutgoingPayload>,
+struct ConnectionStore {
+    connections: HashMap<SocketAddr, mpsc::Sender<RawPacket>>,
+    listener: mpsc::Sender<Connection>,
+    packets: mpsc::Sender<(RawPacket, SocketAddr)>,
 }
 
-#[derive(Debug)]
-pub struct RecvHalf {
-    payloads: mpsc::Receiver<Result<IncomingPayload>>,
+impl Connection {
+    /// Connect to a remote address and bind to a random local one.
+    pub async fn connect<T>(remote_addr: T) -> Result<Connection>
+    where
+        T: ToSocketAddrs,
+    {
+        let local_addr = (Ipv4Addr::new(0, 0, 0, 0), 0);
+        let socket = UdpSocket::bind(local_addr).await?;
+        socket.connect(remote_addr).await?;
+        let (receiver, sender) = socket.split();
+
+        let (packet_tx, outgoing) = mpsc::channel(16);
+        let (incoming, packet_rx) = mpsc::channel(16);
+
+        tokio::spawn(Self::send_packets(sender, outgoing));
+        tokio::spawn(Self::recv_packets(receiver, incoming));
+
+        let env = ConnectionEnv {
+            packet_rx,
+            packet_tx,
+        };
+
+        Connection::establish(env).await
+    }
+
+    /// Receive packets from a channel and send them to the adressee.
+    async fn send_packets(mut socket: udp::SendHalf, mut packets: mpsc::Receiver<RawPacket>) {
+        while let Some(packet) = packets.recv().await {
+            log::trace!("sending {} bytes", packet.len());
+            if let Err(e) = socket.send(&packet).await {
+                log::error!("failed to send packet: {:#}", e);
+            }
+        }
+    }
+
+    async fn recv_packets(mut socket: udp::RecvHalf, mut packets: mpsc::Sender<RawPacket>) {
+        const MAX_UDP_PACKET_SIZE: usize = 1 << 16;
+        let mut buffer = vec![0; MAX_UDP_PACKET_SIZE];
+        loop {
+            match socket.recv(&mut buffer).await {
+                Err(e) => {
+                    log::error!("failed to receive packet: {:#}", e);
+                    break;
+                }
+                Ok(len) => {
+                    log::trace!("receiveing {} bytes...", len);
+
+                    use rand::Rng;
+                    if rand::thread_rng().gen_bool(PACKET_LOSS) {
+                        log::warn!("dropping packet");
+                        continue;
+                    }
+
+                    let bytes = buffer[..len].to_vec();
+                    if packets.send(bytes).await.is_err() {
+                        log::warn!("failde to dispatch packet: channel closed");
+                        break;
+                    }
+                }
+            };
+        }
+    }
 }
 
-/// What kind of connection the socket has.
-#[derive(Debug, Copy, Clone)]
-enum Connection {
-    /// The socket may only send and receive from a single address.
-    Connected { remote: SocketAddr },
-    /// The socket is free to send and receivee from any address.
-    Free,
-}
-
-struct OutgoingPayload {
-    bytes: Vec<u8>,
-    target: Option<SocketAddr>,
-
-    /// Determines if this payload needs to be acked
-    needs_ack: bool,
-}
-
-struct IncomingPayload {
-    bytes: Vec<u8>,
-    source: SocketAddr,
-}
-
-#[derive(Debug)]
-enum Event {
-    /// A packet was received.
-    ReceivedChunk { chunk: ChunkId, addr: SocketAddr },
-
-    /// A previously sent chunk was acknowledged.
-    ChunkAcknowledged { chunk: ChunkId },
-
-    /// A disconnect was requested.
-    RequestDisconnect,
-}
-
-impl Socket {
+impl Listener {
     /// Bind to a local address.
-    pub async fn bind<T>(local_addr: T) -> Result<Socket>
+    pub async fn bind<T>(local_addr: T) -> Result<Listener>
     where
         T: ToSocketAddrs,
     {
         let socket = UdpSocket::bind(local_addr).await?;
-        Socket::from_udp(socket, Connection::Free)
-    }
+        let addr = socket.local_addr().ok();
+        let (receiver, sender) = socket.split();
 
-    /// Connect to a remote address and bind to a random local one.
-    pub async fn connect(remote_addr: SocketAddr) -> Result<Socket>
-    {
-        let local_addr = (Ipv4Addr::new(0, 0, 0, 0), 0u16);
-        let socket = UdpSocket::bind(local_addr).await?;
-        socket.connect(remote_addr).await?;
+        let (packet_tx, packet_rx) = mpsc::channel::<(Vec<_>, _)>(16);
+        let (connection_tx, connection_rx) = mpsc::channel(16);
 
-        let connection = Connection::Connected {
-            remote: remote_addr,
+        let connections = ConnectionStore {
+            connections: HashMap::new(),
+            listener: connection_tx,
+            packets: packet_tx,
         };
 
-        Socket::from_udp(socket, connection)
+        tokio::spawn(Self::send_packets(sender, packet_rx));
+        tokio::spawn(Self::recv_packets(receiver, connections));
+
+        Ok(Listener {
+            connections: connection_rx,
+            addr,
+        })
     }
 
-    /// Wrap a UDP socket.
-    fn from_udp(socket: UdpSocket, connection: Connection) -> Result<Socket> {
-        let addr = socket.local_addr().ok();
-
-        let (send, recv) = Self::init_socket(socket, connection)?;
-
-        Ok(Socket { send, recv, addr })
-    }
-
-    /// Get the local address that this socket is bound to.
+    /// Get the local address this socket is bound to
     pub fn local_addr(&self) -> Option<SocketAddr> {
         self.addr
     }
 
-    /// Split the socket into a send and recv half.
-    pub fn split(self) -> (SendHalf, RecvHalf) {
-        (self.send, self.recv)
+    /// Accept an incoming connection.
+    pub async fn accept(&mut self) -> Result<Connection> {
+        self.connections.recv().await.ok_or(Error::ConnectionClosed)
     }
 
-    fn init_socket(socket: UdpSocket, connection: Connection) -> Result<(SendHalf, RecvHalf)> {
-        let (sender, payload_rx) = mpsc::channel(16);
-        let (mut payload_tx, receiver) = mpsc::channel(16);
-        let (events_tx, events_rx) = mpsc::channel(16);
-
-        tokio::spawn(async move {
-            let (recv, send) = socket.split();
-
-            let mut send_state = SendState {
-                socket: send,
-                connection,
-                payloads: payload_rx,
-                events: events_rx,
-            };
-
-            let mut recv_state = RecvState {
-                receiver: recv,
-                events: events_tx,
-                payloads: payload_tx.clone(),
-            };
-
-            let result =
-                future::try_join(recv_state.handle_incoming(), send_state.handle_outgoing()).await;
-
-            if let Err(e) = result {
-                log::error!("connection aborted: {:#}", e);
-
-                let _ = payload_tx.send(Err(e)).await;
+    /// Receive packets from a channel and send them to the adressee
+    async fn send_packets(
+        mut socket: udp::SendHalf,
+        mut packets: mpsc::Receiver<(RawPacket, SocketAddr)>,
+    ) {
+        while let Some((packet, addr)) = packets.recv().await {
+            log::trace!("sending {} bytes to [{}]", packet.len(), addr);
+            if let Err(e) = socket.send_to(&packet, &addr).await {
+                log::error!("failed to send packet: {:#}", e);
             }
-        });
-
-        let send = SendHalf { payloads: sender };
-        let recv = RecvHalf { payloads: receiver };
-
-        Ok((send, recv))
-    }
-}
-
-impl SendHalf {
-    /// Send a payload.
-    pub async fn send(&mut self, bytes: Vec<u8>, needs_ack: bool) -> Result<()> {
-        let payload = OutgoingPayload {
-            bytes,
-            target: None,
-            needs_ack,
-        };
-
-        self.payloads
-            .send(payload)
-            .await
-            .map_err(|_| Error::ConnectionClosed)
-    }
-
-    /// Send a payload.
-    pub async fn send_to(
-        &mut self,
-        bytes: Vec<u8>,
-        addr: SocketAddr,
-        needs_ack: bool,
-    ) -> Result<()> {
-        let payload = OutgoingPayload {
-            bytes,
-            target: Some(addr),
-            needs_ack,
-        };
-
-        self.payloads
-            .send(payload)
-            .await
-            .map_err(|_| Error::ConnectionClosed)
-    }
-}
-
-impl RecvHalf {
-    /// Recv the next payload.
-    pub async fn recv(&mut self) -> Result<Option<Vec<u8>>> {
-        match self.payloads.recv().await.transpose()? {
-            None => Ok(None),
-            Some(payload) => Ok(Some(payload.bytes)),
         }
     }
 
-    /// Recv the next payload.
-    pub async fn recv_from(&mut self) -> Result<Option<(Vec<u8>, SocketAddr)>> {
-        match self.payloads.recv().await.transpose()? {
-            None => Ok(None),
-            Some(payload) => Ok(Some((payload.bytes, payload.source))),
+    /// Receive packets from a socket and send any new connections to the listener.
+    async fn recv_packets(mut socket: udp::RecvHalf, mut connections: ConnectionStore) {
+        const MAX_UDP_PACKET_SIZE: usize = 1 << 16;
+        let mut buffer = vec![0; MAX_UDP_PACKET_SIZE];
+
+        loop {
+            match socket.recv_from(&mut buffer).await {
+                Err(e) => log::error!("failed to receive packet: {:#}", e),
+                Ok((len, addr)) => {
+                    log::trace!("receiving {} bytes from [{}]", len, addr);
+                    let bytes = buffer[..len].to_vec();
+
+                    use rand::Rng;
+                    if rand::thread_rng().gen_bool(PACKET_LOSS) {
+                        log::warn!("dropping packet");
+                        continue;
+                    }
+
+                    connections.send(bytes, addr).await;
+                }
+            };
+        }
+    }
+}
+
+impl ConnectionStore {
+    /// Send a packet to a client. If the client does not have an active connection, send a new
+    /// connection to the listener.
+    pub async fn send(&mut self, packet: RawPacket, addr: SocketAddr) {
+        let ConnectionStore {
+            ref mut connections,
+            ref mut listener,
+            ref packets,
+        } = self;
+
+        let conn = connections.entry(addr).or_insert_with(|| {
+            let (a, b) = ConnectionEnv::pair(16);
+
+            let mut listener = listener.clone();
+            tokio::spawn(async move {
+                match Connection::accept(b).await {
+                    Err(e) => log::error!("failed to accept connection: {:#}", e),
+                    Ok(conn) => {
+                        if listener.send(conn).await.is_err() {
+                            log::warn!("failed to accept incoming connection: listener closed");
+                        }
+                    }
+                }
+            });
+
+            let mut packet_rx = a.packet_rx;
+            let mut packet_tx = packets.clone();
+            tokio::spawn(async move {
+                while let Some(packet) = packet_rx.recv().await {
+                    if packet_tx.send((packet, addr)).await.is_err() {
+                        break;
+                    }
+                }
+            });
+
+            a.packet_tx
+        });
+
+        if conn.send(packet).await.is_err() {
+            log::warn!("dropping connection to [{}]", addr);
+            self.connections.remove(&addr);
         }
     }
 }

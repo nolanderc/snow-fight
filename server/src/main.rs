@@ -75,8 +75,8 @@ impl Server {
     pub async fn run(mut self) -> anyhow::Error {
         loop {
             let conn = match self.listener.accept().await {
-                Some(conn) => conn,
-                None => break anyhow!("socket closed"),
+                Ok(conn) => conn,
+                Err(e) => break anyhow!("socket closed: {:#}", e),
             };
 
             let addr = conn.addr();

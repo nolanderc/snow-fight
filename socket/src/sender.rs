@@ -9,8 +9,6 @@ use tokio::net::udp;
 use tokio::sync::mpsc;
 use tokio::time::{delay_queue::Key, DelayQueue, Duration};
 
-const RETRANSMIT_DELAY: u64 = 100;
-
 pub(crate) struct SendState {
     pub socket: udp::SendHalf,
     pub connection: Connection,
@@ -88,8 +86,15 @@ impl<'a> Sender<'a> {
                             self.stop_retransmit(chunk);
                         }
 
-                        Event::RequestDisconnect => {
-                            log::warn!("unimplemented: clean disconnect");
+                        Event::RequestDisconnect { addr } => {
+                            self.send_close(addr).await?;
+                            self.clients.remove(&addr);
+                            log::warn!("unimplemented: request disconnect [{}]", addr);
+                        }
+
+                        Event::ConnectionClosed { addr } => {
+                            self.clients.remove(&addr);
+                            log::warn!("unimplemented: connection closed [{}]", addr);
                         }
                     }
                 },
@@ -125,6 +130,18 @@ impl<'a> Sender<'a> {
         let header = Header::ack(chunk.seq, chunk.chunk);
 
         log::debug!("acking {}:{}", header.seq, header.chunk);
+
+        let bytes = header.serialize();
+        self.send(&bytes, Some(addr)).await?;
+
+        Ok(())
+    }
+
+    /// Acknowledge a received packet.
+    async fn send_close(&mut self, addr: SocketAddr) -> Result<()> {
+        let header = Header::close();
+
+        log::debug!("closing [{}]", addr);
 
         let bytes = header.serialize();
         self.send(&bytes, Some(addr)).await?;

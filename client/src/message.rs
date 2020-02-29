@@ -1,7 +1,7 @@
 use crate::oneshot;
 use futures::future;
 use protocol::{Channel, Event, Message, Request, RequestKind, ResponseKind};
-use socket::{RecvHalf, SendHalf, Socket};
+use socket::{RecvHalf, SendHalf, Connection as Socket};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use tokio::runtime::{self, Runtime};
@@ -24,8 +24,7 @@ struct ResponseCallback(oneshot::Sender<ResponseKind>);
 
 impl Connection {
     /// Establish a new connection to the server at address `addr`.
-    pub fn establish(addr: SocketAddr) -> anyhow::Result<Connection>
-    {
+    pub fn establish(addr: SocketAddr) -> anyhow::Result<Connection> {
         let mut runtime = Runtime::new()?;
         let handle = runtime.handle().clone();
 
@@ -176,7 +175,7 @@ impl Connection {
         mut receiver: RecvHalf,
         mut messages: mpsc::Sender<Message>,
     ) -> anyhow::Result<()> {
-        while let Some(bytes) = receiver.recv().await? {
+        while let Some(bytes) = receiver.recv().await {
             log::debug!("received {} bytes...", bytes.len());
 
             match protocol::from_bytes(&bytes) {

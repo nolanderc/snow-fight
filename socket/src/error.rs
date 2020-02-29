@@ -18,35 +18,7 @@ pub enum Error {
 
     #[error("no target address specified, but the socket is not connected")]
     NoTarget,
-}
 
-/// Encode the severity of an error.
-#[derive(Debug, Error)]
-pub(crate) enum Severity<E>
-where
-    E: std::fmt::Debug + std::error::Error + 'static,
-{
-    #[error("a fatal error occured")]
-    Fatal(#[source] E),
-    #[error("an error occured")]
-    Soft(#[source] E),
-}
-
-impl<E> Severity<E>
-where
-    E: std::fmt::Debug + std::error::Error + 'static,
-{
-    pub fn fatal<T>(t: T) -> Self
-    where
-        T: Into<E>,
-    {
-        Self::Fatal(t.into())
-    }
-
-    pub fn soft<T>(t: T) -> Self
-    where
-        T: Into<E>,
-    {
-        Self::Soft(t.into())
-    }
+    #[error("the connection timed out")]
+    ConnectionTimeout,
 }

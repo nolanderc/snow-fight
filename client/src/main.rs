@@ -13,7 +13,7 @@ use options::Options;
 
 use protocol::{EventKind, Init, RequestKind};
 use std::io::BufRead;
-use std::sync::mpsc::channel;
+use std::sync::mpsc;
 use std::thread;
 use structopt::StructOpt;
 
@@ -37,16 +37,16 @@ fn main() -> anyhow::Result<()> {
 
     println!("Received: {:?}", init.wait());
 
-    let (sender, chats) = channel();
+    let (sender, chats) = mpsc::channel();
     thread::spawn(move || {
         let stdin = std::io::stdin();
         for line in stdin.lock().lines() {
             let text = match line {
                 Err(e) => {
                     log::error!("Failed to read line: {}", e);
-                    continue;
+                    break;
                 }
-                Ok(line) => line,
+                Ok(line) => dbg!(line),
             };
 
             if let Err(e) = sender.send(text) {
@@ -54,9 +54,10 @@ fn main() -> anyhow::Result<()> {
                 break;
             }
         }
+        println!("closing stdin");
     });
 
-    loop {
+    'main: loop {
         while let Some(event) = connection.poll_event()? {
             match event.kind {
                 EventKind::Chat(chat) => {
@@ -65,21 +66,27 @@ fn main() -> anyhow::Result<()> {
                     } else {
                         println!("{} said: <{} bytes>", chat.player, chat.message.len());
                     }
-                },
+                }
             }
         }
 
-        while let Ok(chat) = chats.try_recv() {
-            if chat == "echo" {
-                let mut text = String::new();
-                for i in 0..10000 {
-                    use std::fmt::Write;
-                    write!(text, "echo {} ", i).unwrap();
-                }
+        loop {
+            match chats.try_recv() {
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => break 'main Ok(()),
+                Ok(chat) => {
+                    if chat == "echo" {
+                        let mut text = String::new();
+                        for i in 0..10000 {
+                            use std::fmt::Write;
+                            write!(text, "echo {} ", i).unwrap();
+                        }
 
-                connection.send(RequestKind::SendChat(text));
-            } else {
-                connection.send(RequestKind::SendChat(chat));
+                        connection.send(RequestKind::SendChat(text));
+                    } else {
+                        connection.send(RequestKind::SendChat(chat));
+                    }
+                }
             }
         }
 
