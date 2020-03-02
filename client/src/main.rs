@@ -73,7 +73,7 @@ fn main() -> anyhow::Result<()> {
         loop {
             match chats.try_recv() {
                 Err(mpsc::TryRecvError::Empty) => break,
-                Err(mpsc::TryRecvError::Disconnected) => break 'main Ok(()),
+                Err(mpsc::TryRecvError::Disconnected) => break 'main,
                 Ok(chat) => {
                     if chat == "echo" {
                         let mut text = String::new();
@@ -92,6 +92,11 @@ fn main() -> anyhow::Result<()> {
 
         std::thread::sleep(std::time::Duration::from_secs(1) / 60);
     }
+
+    log::info!("shutting down");
+    connection.close();
+
+    Ok(())
 }
 
 /// Setup logging facilities.

@@ -3,6 +3,7 @@
 use futures::stream::StreamExt;
 use std::collections::{HashMap, HashSet};
 use tokio::sync::mpsc;
+use tokio::task;
 use tokio::time::{self, delay_queue::Key, DelayQueue, Duration};
 
 use crate::error::{Error, Result};
@@ -24,16 +25,7 @@ pub(crate) struct ConnectionEnv {
 pub struct Connection {
     payload_rx: mpsc::Receiver<IncomingPayload>,
     payload_tx: mpsc::Sender<OutgoingPayload>,
-}
-
-#[derive(Debug)]
-pub struct SendHalf {
-    payloads: mpsc::Sender<OutgoingPayload>,
-}
-
-#[derive(Debug)]
-pub struct RecvHalf {
-    payloads: mpsc::Receiver<IncomingPayload>,
+    driver: task::JoinHandle<Result<()>>,
 }
 
 pub(crate) struct OutgoingPayload {
@@ -99,14 +91,30 @@ impl Connection {
         Ok(Self::spawn(env, token))
     }
 
-    pub fn split(self) -> (SendHalf, RecvHalf) {
-        let recv = RecvHalf {
-            payloads: self.payload_rx,
-        };
-        let send = SendHalf {
-            payloads: self.payload_tx,
-        };
-        (send, recv)
+    /// Send a payload.
+    pub async fn send(&mut self, bytes: Vec<u8>, needs_ack: bool) -> Result<()> {
+        let payload = OutgoingPayload { bytes, needs_ack };
+
+        self.payload_tx
+            .send(payload)
+            .await
+            .map_err(|_| Error::ConnectionClosed)
+    }
+
+    /// Recv a payload
+    pub async fn recv(&mut self) -> Option<Vec<u8>> {
+        let payload = self.payload_rx.recv().await?;
+        Some(payload.bytes)
+    }
+
+    /// Close the connection
+    pub async fn shutdown(self) -> Result<()> {
+        drop(self.payload_rx);
+        drop(self.payload_tx);
+        match self.driver.await {
+            Err(_) => Err(Error::ConnectionShutdown),
+            Ok(result) => result,
+        }
     }
 
     fn verify(init: Init, challenge: Challenge, response: ChallengeResponse) -> Result<()> {
@@ -117,22 +125,32 @@ impl Connection {
         let (outgoing_tx, outgoing_rx) = mpsc::channel(16);
         let (incoming_tx, incoming_rx) = mpsc::channel(16);
 
+        let sequences = SequenceBuilder {
+            sequences: HashMap::new(),
+            complete: HashSet::new(),
+        };
+
+        let transmit = TransmitQueue {
+            packets: DelayQueue::new(),
+            keys: HashMap::new(),
+            next_sequence: 0,
+        };
+
         let responder = Responder {
             packet_tx: env.packet_tx,
             packet_rx: env.packet_rx,
             payload_tx: incoming_tx,
             payload_rx: outgoing_rx,
+            sequences,
+            transmit,
         };
 
-        tokio::spawn(async move {
-            if let Err(e) = responder.handle_packets().await {
-                log::error!("connection closed: {:#}", e);
-            }
-        });
+        let driver = tokio::spawn(responder.handle_packets());
 
         Connection {
             payload_tx: outgoing_tx,
             payload_rx: incoming_rx,
+            driver,
         }
     }
 }
@@ -142,6 +160,9 @@ struct Responder {
     packet_rx: mpsc::Receiver<RawPacket>,
     payload_tx: mpsc::Sender<IncomingPayload>,
     payload_rx: mpsc::Receiver<OutgoingPayload>,
+
+    sequences: SequenceBuilder,
+    transmit: TransmitQueue,
 }
 
 struct SequenceBuilder {
@@ -157,55 +178,61 @@ struct TransmitQueue {
 
 impl Responder {
     pub async fn handle_packets(mut self) -> Result<()> {
-        let mut sequences = SequenceBuilder {
-            sequences: HashMap::new(),
-            complete: HashSet::new(),
-        };
-
-        let mut transmit = TransmitQueue {
-            packets: DelayQueue::new(),
-            keys: HashMap::new(),
-            next_sequence: 0,
-        };
-
         let mut timeout = time::delay_for(CONNECTION_TIMEOUT);
 
         loop {
             tokio::select! {
                 () = &mut timeout => {
                     log::warn!("connection timed out");
+                    self.close_connection().await?;
                     break Err(Error::ConnectionTimeout)
                 },
 
                 Some(packet) = self.packet_rx.recv() => {
                     if let Some((header, body)) = Header::extract(&packet) {
-                        timeout = time::delay_for(CONNECTION_TIMEOUT);
-
-                        self.acknowledge_packet(header).await?;
-                        if header.is_ack() {
-                            let chunk = header.chunk_id();
-                            log::debug!("stop transmitting {}:{}", chunk.seq, chunk.chunk);
-                            transmit.acknowledge(header.chunk_id());
-                        } else if let Some(payload) = sequences.insert(header, body)? {
-                            self.send_payload(payload).await?;
+                        if header.is_close() {
+                            break Ok(());
                         }
+
+                        timeout = time::delay_for(CONNECTION_TIMEOUT);
+                        self.handle_packet(header, body).await?;
                     }
                 },
 
-                Some(payload) = self.payload_rx.recv() => {
-                    self.transmit_payload(&mut transmit, &payload).await?;
+                payload = self.payload_rx.recv() => {
+                    if let Some(payload) = payload {
+                        self.transmit_payload(&payload).await?;
+                    } else {
+                        self.close_connection().await?;
+                        break Ok(());
+                    }
                 },
 
-                Some(packet) = &mut transmit.packets.next() => {
+                Some(packet) = &mut self.transmit.packets.next() => {
                     let (chunk, packet) = packet.unwrap().into_inner();
-                    log::debug!("retransmitting {}:{}", chunk.seq, chunk.chunk);
                     self.send_packet(packet.clone()).await?;
-                    transmit.enqueue(chunk, packet);
+                    self.transmit.enqueue(chunk, packet);
                 },
 
-                else => break Ok(()),
+                else => {
+                    self.close_connection().await?;
+                    break Ok(());
+                }
             }
         }
+    }
+
+    async fn handle_packet(&mut self, header: Header, body: &[u8]) -> Result<()> {
+        self.acknowledge_packet(header).await?;
+
+        if header.is_ack() {
+            let chunk = header.chunk_id();
+            self.transmit.acknowledge(header.chunk_id());
+        } else if let Some(payload) = self.sequences.insert(header, body)? {
+            self.send_payload(payload).await?;
+        }
+
+        Ok(())
     }
 
     async fn acknowledge_packet(&mut self, header: Header) -> Result<()> {
@@ -217,12 +244,15 @@ impl Responder {
         Ok(())
     }
 
-    async fn transmit_payload(
-        &mut self,
-        transmit: &mut TransmitQueue,
-        payload: &OutgoingPayload,
-    ) -> Result<()> {
-        let sequence = transmit.allocate_sequence();
+    async fn close_connection(&mut self) -> Result<()> {
+        log::debug!("closing connection");
+        let close = Header::close();
+        self.send_packet(close.serialize().to_vec()).await?;
+        Ok(())
+    }
+
+    async fn transmit_payload(&mut self, payload: &OutgoingPayload) -> Result<()> {
+        let sequence = self.transmit.allocate_sequence();
         let packets = packet::into_chunks(sequence, &payload.bytes).map_err(Error::SplitPayload)?;
 
         let mut buffer = Vec::new();
@@ -236,7 +266,7 @@ impl Responder {
             buffer.extend_from_slice(body);
 
             if payload.needs_ack {
-                transmit.enqueue(header.chunk_id(), buffer.clone());
+                self.transmit.enqueue(header.chunk_id(), buffer.clone());
             }
 
             self.send_packet(buffer.clone()).await?;
@@ -302,7 +332,6 @@ impl TransmitQueue {
     }
 
     pub fn enqueue(&mut self, chunk: ChunkId, packet: RawPacket) {
-        log::debug!("enqueue {}:{}", chunk.seq, chunk.chunk);
         let key = self.packets.insert((chunk, packet), RETRANSMIT_DELAY);
         self.keys.insert(chunk, key);
     }
@@ -400,26 +429,6 @@ impl FromRawPacket for ConnectionToken {
 impl IntoRawPacket for ConnectionToken {
     fn serialize(&self) -> RawPacket {
         vec![4]
-    }
-}
-
-impl SendHalf {
-    /// Send a payload.
-    pub async fn send(&mut self, bytes: Vec<u8>, needs_ack: bool) -> Result<()> {
-        let payload = OutgoingPayload { bytes, needs_ack };
-
-        self.payloads
-            .send(payload)
-            .await
-            .map_err(|_| Error::ConnectionClosed)
-    }
-}
-
-impl RecvHalf {
-    /// Recv the next payload.
-    pub async fn recv(&mut self) -> Option<Vec<u8>> {
-        let payload = self.payloads.recv().await?;
-        Some(payload.bytes)
     }
 }
 

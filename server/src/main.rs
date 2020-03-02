@@ -86,11 +86,16 @@ impl Server {
             let game = self.game.clone();
 
             tokio::spawn(async move {
-                match handle_connection(conn, game).await {
+                let mut conn = conn;
+                match handle_connection(&mut conn, game).await {
                     Ok(()) => log::info!("Done with the client [{}]", addr),
                     Err(error) => {
                         log::error!("An error occured with the client [{}]: {:?}", addr, error);
                     }
+                }
+
+                if let Err(error) = conn.shutdown().await {
+                    log::error!("failed to shutdown connection to [{}]: {:#}", addr, error);
                 }
             });
         }
@@ -98,12 +103,12 @@ impl Server {
 }
 
 /// Handle an incoming connection.
-async fn handle_connection(mut conn: Connection, mut game: GameHandle) -> Result<()> {
-    let mut player = initialize_client(&mut conn, &mut game)
+async fn handle_connection(conn: &mut Connection, mut game: GameHandle) -> Result<()> {
+    let mut player = initialize_client(conn, &mut game)
         .await
         .context("failed to initialize client")?;
 
-    let result = handle_client(&mut conn, &mut game, &mut player)
+    let result = handle_client(conn, &mut game, &mut player)
         .await
         .context("failed to serve client");
 

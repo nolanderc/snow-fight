@@ -1,14 +1,12 @@
 use protocol::{Event, Message, Request, Response};
-use socket::{Listener as SocketListener, RecvHalf, SendHalf};
+use socket::{Connection as Socket, Listener as SocketListener};
 use std::net::SocketAddr;
 use tokio::net::ToSocketAddrs;
 
 /// A connection to a single client.
-#[derive(Debug)]
 pub struct Connection {
     addr: SocketAddr,
-    receiver: RecvHalf,
-    sender: SendHalf,
+    socket: Socket,
 }
 
 /// Listens for new client connections.
@@ -18,6 +16,11 @@ pub struct Listener {
 }
 
 impl Connection {
+    /// Close the connection
+    pub async fn shutdown(self) -> crate::Result<()> {
+        self.socket.shutdown().await.map_err(Into::into)
+    }
+
     /// Get the address of the client.
     pub fn addr(&self) -> SocketAddr {
         self.addr
@@ -26,7 +29,7 @@ impl Connection {
     /// Send a message to the client.
     pub async fn send(&mut self, message: &Message) -> crate::Result<()> {
         let bytes = protocol::to_bytes(message)?;
-        self.sender.send(bytes, true).await?;
+        self.socket.send(bytes, true).await?;
         Ok(())
     }
 
@@ -43,7 +46,7 @@ impl Connection {
     /// Receive a request from the client. Returns `None` in case no more requests will be received
     /// from the client.
     pub async fn recv_request(&mut self) -> crate::Result<Option<Request>> {
-        if let Some(bytes) = self.receiver.recv().await {
+        if let Some(bytes) = self.socket.recv().await {
             let request = protocol::from_bytes(&bytes)?;
             Ok(Some(request))
         } else {
@@ -68,14 +71,9 @@ impl Listener {
 
     /// Wait for a new client to connect to the socket.
     pub async fn accept(&mut self) -> crate::Result<Connection> {
-        let connection = self.listener.accept().await?;
-        let (sender, receiver) = connection.split();
+        let socket = self.listener.accept().await?;
         let addr = self.listener.local_addr().unwrap();
 
-        Ok(Connection {
-            addr,
-            sender,
-            receiver,
-        })
+        Ok(Connection { addr, socket })
     }
 }

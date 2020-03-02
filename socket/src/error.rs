@@ -21,4 +21,7 @@ pub enum Error {
 
     #[error("the connection timed out")]
     ConnectionTimeout,
+
+    #[error("an error occured when closing connection")]
+    ConnectionShutdown,
 }

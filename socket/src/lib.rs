@@ -13,7 +13,7 @@ pub use crate::connection::*;
 use crate::error::{Error, Result};
 
 /// The percentage of artificial packet loss to add (for testing purposes).
-const PACKET_LOSS: f64 = 0.00;
+const PACKET_LOSS: f64 = 0.0;
 
 type RawPacket = Vec<u8>;
 
@@ -67,6 +67,7 @@ impl Connection {
     async fn recv_packets(mut socket: udp::RecvHalf, mut packets: mpsc::Sender<RawPacket>) {
         const MAX_UDP_PACKET_SIZE: usize = 1 << 16;
         let mut buffer = vec![0; MAX_UDP_PACKET_SIZE];
+
         loop {
             match socket.recv(&mut buffer).await {
                 Err(e) => {
@@ -84,7 +85,7 @@ impl Connection {
 
                     let bytes = buffer[..len].to_vec();
                     if packets.send(bytes).await.is_err() {
-                        log::warn!("failde to dispatch packet: channel closed");
+                        log::warn!("failed to dispatch packet: channel closed");
                         break;
                     }
                 }
