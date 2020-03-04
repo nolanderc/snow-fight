@@ -39,6 +39,7 @@ pub const MAX_PAYLOAD_SIZE: usize = MAX_CHUNK_COUNT * MAX_CHUNK_SIZE;
 /// The size of the packet header, in bytes.
 pub const HEADER_SIZE: usize = 4;
 
+// TODO: replace with an enum with discriminants
 bitflags! {
     pub struct Flags: u8 {
         /// This packet needs to be acknowledged by the receiver.
@@ -55,6 +56,7 @@ bitflags! {
     }
 }
 
+// TODO: use a separate system for large chunks and "messages"
 /// The header of every packet.
 #[derive(Debug, Copy, Clone)]
 pub(crate) struct Header {
@@ -64,7 +66,7 @@ pub(crate) struct Header {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct ChunkId {
+pub(crate) struct PacketId {
     pub chunk: u8,
     pub seq: u16,
 }
@@ -136,8 +138,8 @@ impl Header {
         self.flags.contains(Flags::CLOSE)
     }
 
-    pub fn chunk_id(self) -> ChunkId {
-        ChunkId {
+    pub fn chunk_id(self) -> PacketId {
+        PacketId {
             chunk: self.chunk,
             seq: self.seq,
         }
@@ -186,7 +188,7 @@ impl Sequence {
         }
     }
 
-    /// Get the current payload of the sequence
+    /// Get the current payload.
     pub fn payload(self) -> Vec<u8> {
         self.payload
     }
@@ -223,10 +225,6 @@ impl Sequence {
         }
 
         let chunk_index = header.chunk as usize;
-
-        if self.received[chunk_index] {
-            return Ok(())
-        }
 
         self.received[chunk_index] = true;
 

@@ -8,6 +8,10 @@ mod error;
 mod leb128;
 mod ser;
 
+pub mod event;
+pub mod request;
+pub mod response;
+
 pub use de::from_bytes;
 pub use error::{Error, Result};
 pub use ser::to_bytes;
@@ -35,111 +39,6 @@ pub enum Message {
 #[derive(Debug, Copy, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Channel(pub u32);
 
-pub mod request {
-    use super::*;
-
-    /// Sent from the client to the server.
-    #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub struct Request {
-        pub channel: Channel,
-        pub kind: RequestKind,
-    }
-
-    /// Different kinds of requests.
-    #[derive(Debug, Clone, Serialize, Deserialize, From)]
-    pub enum RequestKind {
-        Init(Init),
-        PlayerList,
-        SendChat(String),
-    }
-
-    #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub struct Init {
-        /// The requested nickname.
-        pub nickname: String,
-    }
-
-    impl RequestKind {
-        pub fn name(&self) -> &'static str {
-            match self {
-                RequestKind::Init(_) => "Init",
-                RequestKind::PlayerList => "PlayerList",
-                RequestKind::SendChat(_) => "SendChat",
-            }
-        }
-    }
-}
-
-pub mod response {
-    use super::*;
-
-    /// Sent from the server to the client in response to a request.
-    #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub struct Response {
-        pub channel: Channel,
-        pub kind: ResponseKind,
-    }
-
-    /// Different kinds of responses.
-    #[derive(Debug, Clone, Serialize, Deserialize, From)]
-    pub enum ResponseKind {
-        Error(String),
-        Connect(Connect),
-        Start,
-        PlayerList(PlayerList),
-        ChatSent,
-    }
-
-    /// Establish the connection.
-    #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub struct Connect {
-        /// The id assigned to the receiving client.
-        pub player_id: PlayerId,
-    }
-
-    /// A list of the currently connected clients
-    #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub struct PlayerList {
-        pub players: Vec<PlayerId>,
-    }
-
-    impl<T> From<(Channel, T)> for Response
-    where
-        T: Into<ResponseKind>,
-    {
-        fn from((channel, kind): (Channel, T)) -> Self {
-            Response {
-                channel,
-                kind: kind.into(),
-            }
-        }
-    }
-}
-
-pub mod event {
-    use super::*;
-
-    /// Sent from the server to the client when an event occurs.
-    #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub struct Event {
-        pub time: u32,
-        pub kind: EventKind,
-    }
-
-    /// Different kind of events.
-    #[derive(Debug, Clone, Serialize, Deserialize, From)]
-    pub enum EventKind {
-        Chat(Chat),
-    }
-
-    /// A chat message was sent by a player.
-    #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub struct Chat {
-        pub player: PlayerId,
-        pub message: String,
-    }
-}
-
 impl Into<u32> for PlayerId {
     fn into(self) -> u32 {
         self.0
@@ -149,5 +48,14 @@ impl Into<u32> for PlayerId {
 impl Display for PlayerId {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         write!(f, "P{}", self.0)
+    }
+}
+
+impl Message {
+    pub fn must_arrive(&self) -> bool {
+        match self {
+            Message::Event(event) => event.must_arrive(),
+            Message::Response(response) => response.must_arrive(),
+        }
     }
 }

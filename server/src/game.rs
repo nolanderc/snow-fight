@@ -16,7 +16,7 @@ use protocol::{
 use world::World;
 
 /// How many times per second to update the game world.
-const TICK_RATE: u32 = 1;
+const TICK_RATE: u32 = 30;
 
 /// The maximum number of events to buffer per player.
 const EVENT_BUFFER_SIZE: usize = 128;
@@ -98,23 +98,22 @@ impl Game {
                     log::trace!("tick");
                     self.tick();
                 }
-                Some(command) = self.receiver.recv() => {
-                    log::debug!("got command: {:?}", command);
-                    self.execute_command(command);
+                command = self.receiver.recv() => match command {
+                    None => {
+                        log::info!("game handle dropped");
+                        break;
+                    },
+                    Some(command) => {
+                        log::debug!("got command: {:?}", command);
+                        self.execute_command(command);
+                    }
                 }
             };
         }
     }
 
     fn tick(&mut self) {
-        let mut events = Vec::<EventKind>::new();
-
-        /*
-        events.push(EventKind::Chat(Chat {
-            player: PlayerId(0),
-            message: "hello".chars().cycle().take(100_000).collect(),
-        }));
-        */
+        let events = Vec::<EventKind>::new();
 
         for event in events {
             self.broadcast(event);

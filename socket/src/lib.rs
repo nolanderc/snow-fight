@@ -2,18 +2,26 @@ use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use tokio::net::{udp, ToSocketAddrs, UdpSocket};
 use tokio::sync::mpsc;
+use tokio::time::{timeout, Duration};
+
+#[macro_use]
+mod util;
 
 mod connection;
+mod packet;
 
 pub mod error;
-mod packet;
 
 pub use crate::connection::*;
 
 use crate::error::{Error, Result};
 
 /// The percentage of artificial packet loss to add (for testing purposes).
-const PACKET_LOSS: f64 = 0.0;
+const PACKET_LOSS: f64 = 0.01;
+
+/// The amount of time a client has to establish a connection, measured from the moment the first
+/// packet arrives.
+const CONNECTION_TIMEOUT: Duration = Duration::from_secs(15);
 
 type RawPacket = Vec<u8>;
 
@@ -51,7 +59,7 @@ impl Connection {
             packet_tx,
         };
 
-        Connection::establish(env).await
+        Connection::establish(env).await.map_err(Error::Connect)
     }
 
     /// Receive packets from a channel and send them to the adressee.
@@ -183,17 +191,7 @@ impl ConnectionStore {
         let conn = connections.entry(addr).or_insert_with(|| {
             let (a, b) = ConnectionEnv::pair(16);
 
-            let mut listener = listener.clone();
-            tokio::spawn(async move {
-                match Connection::accept(b).await {
-                    Err(e) => log::error!("failed to accept connection: {:#}", e),
-                    Ok(conn) => {
-                        if listener.send(conn).await.is_err() {
-                            log::warn!("failed to accept incoming connection: listener closed");
-                        }
-                    }
-                }
-            });
+            tokio::spawn(Self::accept_connection(b, listener.clone()));
 
             let mut packet_rx = a.packet_rx;
             let mut packet_tx = packets.clone();
@@ -211,6 +209,20 @@ impl ConnectionStore {
         if conn.send(packet).await.is_err() {
             log::warn!("dropping connection to [{}]", addr);
             self.connections.remove(&addr);
+        }
+    }
+
+    async fn accept_connection(env: ConnectionEnv, mut listener: mpsc::Sender<Connection>) {
+        match timeout(CONNECTION_TIMEOUT, Connection::accept(env)).await {
+            Err(_) => log::warn!("failed to accept connection: request timed out"),
+            Ok(result) => match result {
+                Err(e) => log::error!("failed to accept connection: {:#}", e),
+                Ok(conn) => {
+                    if listener.send(conn).await.is_err() {
+                        log::warn!("failed to accept incoming connection: listener closed");
+                    }
+                }
+            },
         }
     }
 }

@@ -1,6 +1,6 @@
 use crate::oneshot;
 use protocol::{Channel, Event, Message, Request, RequestKind, ResponseKind};
-use socket::Connection as Socket;
+use socket::{Connection as Socket, Delivery};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::thread;
@@ -18,11 +18,22 @@ pub struct Connection {
     events: mpsc::Receiver<Event>,
 }
 
+/// Evaluetes to the response given to a certain request from the server.
 pub struct ResponseHandle {
     value: oneshot::Receiver<ResponseKind>,
 }
 
+/// A channel through which the response to a request may be sent.
 struct ResponseCallback(oneshot::Sender<ResponseKind>);
+
+/// Routes requests to and from the server.
+struct Router {
+    socket: Socket,
+    requests: mpsc::Receiver<(RequestKind, ResponseCallback)>,
+    events: mpsc::Sender<Event>,
+    sequence: Channel,
+    callbacks: HashMap<Channel, ResponseCallback>,
+}
 
 impl Connection {
     /// Establish a new connection to the server at address `addr`.
@@ -35,17 +46,17 @@ impl Connection {
         let (requests_tx, requests_rx) = mpsc::channel(128);
         let (events_tx, events_rx) = mpsc::channel(128);
 
+        let mut responder = Router {
+            socket,
+            requests: requests_rx,
+            events: events_tx,
+            sequence: Channel(0),
+            callbacks: HashMap::new(),
+        };
+
         let runtime_thread = thread::spawn(move || {
-            let mut socket = socket;
-
-            let driver = Self::handle_stream(&mut socket, requests_rx, events_tx);
-
-            if let Err(e) = runtime.block_on(driver) {
+            if let Err(e) = runtime.block_on(responder.run()) {
                 log::error!("{:#}", e);
-            }
-
-            if let Err(e) = runtime.block_on(socket.shutdown()) {
-                log::error!("failed to close socket: {:#}", e);
             }
         });
 
@@ -106,50 +117,30 @@ impl Connection {
 
         ResponseHandle { value: receiver }
     }
+}
 
+impl Router {
     /// Asynchronously send requests to, and receive messages from, the server.
-    async fn handle_stream(
-        socket: &mut Socket,
-        mut requests: mpsc::Receiver<(RequestKind, ResponseCallback)>,
-        mut events: mpsc::Sender<Event>,
-    ) -> anyhow::Result<()> {
-        let mut callbacks = HashMap::new();
-        let mut sequence = Channel(0);
-
+    async fn run(&mut self) -> anyhow::Result<()> {
         loop {
             tokio::select! {
-                bytes = socket.recv() => match bytes {
+                bytes = self.socket.recv() => match bytes {
                     None => break Ok(()),
                     Some(bytes) => {
-                        log::debug!("received {} bytes...", bytes.len());
-
-                        match protocol::from_bytes(&bytes) {
-                            Err(e) => log::warn!("malformed message: {:#}", e),
-                            Ok(message) => {
-                                Self::dispatch_message(message, &mut callbacks, &mut events).await?
-                            },
-                        }
+                        self.handle_payload(bytes).await?;
                     }
                 },
 
-                request = requests.recv() => {
+                request = self.requests.recv() => {
                     match request {
                         None => {
                             log::info!("closing receiver");
                             break Ok(());
                         },
                         Some((kind, callback)) => {
-                            let channel = sequence;
-
-                            callbacks.insert(channel, callback);
-                            while callbacks.contains_key(&sequence) {
-                                sequence.0 = sequence.0.wrapping_add(1);
-                            }
-
+                            let channel = self.setup_callback(callback);
                             let request = Request { channel, kind };
-                            let bytes = protocol::to_bytes(&request)?;
-                            socket.send(bytes, true).await?;
-
+                            self.send_request(request).await?;
                         }
                     }
                 },
@@ -159,20 +150,54 @@ impl Connection {
         }
     }
 
+    /// Handle an incoming payload from the server.
+    async fn handle_payload(&mut self, bytes: Vec<u8>) -> anyhow::Result<()> {
+        log::debug!("received {} bytes...", bytes.len());
+
+        match protocol::from_bytes(&bytes) {
+            Err(e) => log::warn!("malformed message: {:#}", e),
+            Ok(message) => self.dispatch_message(message).await?,
+        }
+
+        Ok(())
+    }
+
     /// Send a message to the associated callback or broadcast it as an event.
-    async fn dispatch_message(
-        message: Message,
-        callbacks: &mut HashMap<Channel, ResponseCallback>,
-        events: &mut mpsc::Sender<Event>,
-    ) -> anyhow::Result<()> {
+    async fn dispatch_message(&mut self, message: Message) -> anyhow::Result<()> {
         match message {
-            Message::Event(event) => events.send(event).await?,
-            Message::Response(response) => match callbacks.remove(&response.channel) {
+            Message::Event(event) => self.events.send(event).await?,
+            Message::Response(response) => match self.callbacks.remove(&response.channel) {
                 Some(callback) => callback.send(response.kind),
                 None => log::warn!("no callback registered for channel {}", response.channel.0),
             },
         }
 
+        Ok(())
+    }
+
+    /// Setup a callback for a request on a certain channel.
+    fn setup_callback(&mut self, callback: ResponseCallback) -> Channel {
+        let channel = self.sequence;
+        self.callbacks.insert(channel, callback);
+
+        while self.callbacks.contains_key(&self.sequence) {
+            self.sequence.0 = self.sequence.0.wrapping_add(1);
+        }
+
+        channel
+    }
+
+    /// Send a request to the server.
+    async fn send_request(&mut self, request: Request) -> anyhow::Result<()> {
+        let bytes = protocol::to_bytes(&request)?;
+
+        let delivery = if request.must_arrive() {
+            Delivery::Reliable
+        } else {
+            Delivery::BestEffort
+        };
+
+        self.socket.send(bytes, delivery).await?;
         Ok(())
     }
 }
@@ -185,7 +210,7 @@ pub enum PollError {
 }
 
 impl ResponseHandle {
-    /// Wait for the response to arrive.
+    /// Wait for the response to arrive. Blocks the current thread.
     pub fn wait(self) -> anyhow::Result<ResponseKind> {
         self.value.recv().map_err(Into::into)
     }
@@ -202,7 +227,7 @@ impl ResponseHandle {
 }
 
 impl ResponseCallback {
-    /// Attempt to send convert a message into a response and send it to the receiver if it was.
+    /// Send a message to the connected `ResponseHandler`
     pub fn send(self, response: ResponseKind) {
         let _ = self.0.send(response);
     }

@@ -10,18 +10,9 @@ pub enum Error {
     #[error("connection closed")]
     ConnectionClosed,
 
-    #[error("failed to split payload")]
-    SplitPayload(#[source] crate::packet::Error),
-
-    #[error("failed to reconstruct payload")]
-    ReconstructPayload(#[source] crate::packet::Error),
-
     #[error("no target address specified, but the socket is not connected")]
     NoTarget,
 
-    #[error("the connection timed out")]
-    ConnectionTimeout,
-
-    #[error("an error occured when closing connection")]
-    ConnectionShutdown,
+    #[error("failed to establish connection")]
+    Connect(#[source] crate::connection::Error),
 }

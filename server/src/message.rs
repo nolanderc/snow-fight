@@ -1,5 +1,5 @@
 use protocol::{Event, Message, Request, Response};
-use socket::{Connection as Socket, Listener as SocketListener};
+use socket::{Connection as Socket, Delivery, Listener as SocketListener};
 use std::net::SocketAddr;
 use tokio::net::ToSocketAddrs;
 
@@ -29,7 +29,15 @@ impl Connection {
     /// Send a message to the client.
     pub async fn send(&mut self, message: &Message) -> crate::Result<()> {
         let bytes = protocol::to_bytes(message)?;
-        self.socket.send(bytes, true).await?;
+
+        let delivery = if message.must_arrive() {
+            Delivery::Reliable
+        } else {
+            Delivery::BestEffort
+        };
+
+        self.socket.send(bytes, delivery).await?;
+
         Ok(())
     }
 
