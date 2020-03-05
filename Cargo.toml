@@ -6,6 +6,7 @@ members = [
     "client",
     "protocol",
     "socket",
+    "rabbit",
 ]
 
 
