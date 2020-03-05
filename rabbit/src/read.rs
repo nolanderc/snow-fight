@@ -56,7 +56,7 @@ impl<'a> ReadBits for BitReader<'a> {
         if count > self.len {
             Err(crate::Error::Eof)
         } else {
-            let mask = u32::max_value() >> (32 - count);
+            let mask = u32::max_value().checked_shr(32 - count as u32).unwrap_or(0);
             let bits = self.buffer as u32 & mask;
             self.buffer >>= count;
             self.len -= count;

@@ -1,9 +1,9 @@
 mod vlq;
 
-use crate::{PackBits, ReadBits, UnpackBits, WriteBits};
+use crate::{read::Error as _, PackBits, ReadBits, UnpackBits, WriteBits};
 
 impl PackBits for bool {
-    fn pack_bits<W>(&self, writer: &mut W) -> Result<(), W::Error>
+    fn pack<W>(&self, writer: &mut W) -> Result<(), W::Error>
     where
         W: WriteBits,
     {
@@ -12,7 +12,7 @@ impl PackBits for bool {
 }
 
 impl UnpackBits for bool {
-    fn unpack_bits<R>(reader: &mut R) -> Result<Self, R::Error>
+    fn unpack<R>(reader: &mut R) -> Result<Self, R::Error>
     where
         R: ReadBits,
     {
@@ -22,7 +22,7 @@ impl UnpackBits for bool {
 }
 
 impl PackBits for u8 {
-    fn pack_bits<W>(&self, writer: &mut W) -> Result<(), W::Error>
+    fn pack<W>(&self, writer: &mut W) -> Result<(), W::Error>
     where
         W: WriteBits,
     {
@@ -31,7 +31,7 @@ impl PackBits for u8 {
 }
 
 impl UnpackBits for u8 {
-    fn unpack_bits<R>(reader: &mut R) -> Result<Self, R::Error>
+    fn unpack<R>(reader: &mut R) -> Result<Self, R::Error>
     where
         R: ReadBits,
     {
@@ -43,7 +43,7 @@ impl UnpackBits for u8 {
 macro_rules! impl_bit_packing_integer {
     ($ty:ty) => {
         impl PackBits for $ty {
-            fn pack_bits<W>(&self, writer: &mut W) -> Result<(), W::Error>
+            fn pack<W>(&self, writer: &mut W) -> Result<(), W::Error>
             where
                 W: WriteBits,
             {
@@ -52,7 +52,7 @@ macro_rules! impl_bit_packing_integer {
         }
 
         impl UnpackBits for $ty {
-            fn unpack_bits<R>(reader: &mut R) -> Result<Self, R::Error>
+            fn unpack<R>(reader: &mut R) -> Result<Self, R::Error>
             where
                 R: ReadBits,
             {
@@ -75,7 +75,7 @@ impl_bit_packing_integer!(i128);
 impl_bit_packing_integer!(isize);
 
 impl PackBits for f32 {
-    fn pack_bits<W>(&self, writer: &mut W) -> Result<(), W::Error>
+    fn pack<W>(&self, writer: &mut W) -> Result<(), W::Error>
     where
         W: WriteBits,
     {
@@ -84,7 +84,7 @@ impl PackBits for f32 {
 }
 
 impl UnpackBits for f32 {
-    fn unpack_bits<R>(reader: &mut R) -> Result<Self, R::Error>
+    fn unpack<R>(reader: &mut R) -> Result<Self, R::Error>
     where
         R: ReadBits,
     {
@@ -93,7 +93,7 @@ impl UnpackBits for f32 {
 }
 
 impl PackBits for f64 {
-    fn pack_bits<W>(&self, writer: &mut W) -> Result<(), W::Error>
+    fn pack<W>(&self, writer: &mut W) -> Result<(), W::Error>
     where
         W: WriteBits,
     {
@@ -106,7 +106,7 @@ impl PackBits for f64 {
 }
 
 impl UnpackBits for f64 {
-    fn unpack_bits<R>(reader: &mut R) -> Result<Self, R::Error>
+    fn unpack<R>(reader: &mut R) -> Result<Self, R::Error>
     where
         R: ReadBits,
     {
@@ -121,7 +121,7 @@ impl<T> PackBits for Option<T>
 where
     T: PackBits,
 {
-    fn pack_bits<W>(&self, writer: &mut W) -> Result<(), W::Error>
+    fn pack<W>(&self, writer: &mut W) -> Result<(), W::Error>
     where
         W: WriteBits,
     {
@@ -129,7 +129,7 @@ where
             None => writer.write(0, 1),
             Some(value) => {
                 writer.write(1, 1)?;
-                value.pack_bits(writer)
+                value.pack(writer)
             }
         }
     }
@@ -139,14 +139,14 @@ impl<T> UnpackBits for Option<T>
 where
     T: UnpackBits,
 {
-    fn unpack_bits<R>(reader: &mut R) -> Result<Self, R::Error>
+    fn unpack<R>(reader: &mut R) -> Result<Self, R::Error>
     where
         R: ReadBits,
     {
         if reader.read(1)? == 0 {
             Ok(None)
         } else {
-            T::unpack_bits(reader).map(Some)
+            T::unpack(reader).map(Some)
         }
     }
 }
@@ -155,13 +155,13 @@ impl<T> PackBits for Vec<T>
 where
     T: PackBits,
 {
-    fn pack_bits<W>(&self, writer: &mut W) -> Result<(), W::Error>
+    fn pack<W>(&self, writer: &mut W) -> Result<(), W::Error>
     where
         W: WriteBits,
     {
-        self.len().pack_bits(writer)?;
+        self.len().pack(writer)?;
         for item in self {
-            item.pack_bits(writer)?;
+            item.pack(writer)?;
         }
         Ok(())
     }
@@ -171,14 +171,14 @@ impl<T> UnpackBits for Vec<T>
 where
     T: UnpackBits,
 {
-    fn unpack_bits<R>(reader: &mut R) -> Result<Self, R::Error>
+    fn unpack<R>(reader: &mut R) -> Result<Self, R::Error>
     where
         R: ReadBits,
     {
-        let len = usize::unpack_bits(reader)?;
+        let len = usize::unpack(reader)?;
         let mut data = Vec::with_capacity(len);
         for _ in 0..len {
-            let item = T::unpack_bits(reader)?;
+            let item = T::unpack(reader)?;
             data.push(item);
         }
         Ok(data)
@@ -189,14 +189,59 @@ impl<T> PackBits for [T]
 where
     T: PackBits,
 {
-    fn pack_bits<W>(&self, writer: &mut W) -> Result<(), W::Error>
+    fn pack<W>(&self, writer: &mut W) -> Result<(), W::Error>
     where
         W: WriteBits,
     {
-        self.len().pack_bits(writer)?;
+        self.len().pack(writer)?;
         for item in self {
-            item.pack_bits(writer)?;
+            item.pack(writer)?;
         }
         Ok(())
+    }
+}
+
+// TODO: based on the length of the string, sacrifice compactness for byte alignment
+impl PackBits for String {
+    fn pack<W>(&self, writer: &mut W) -> Result<(), W::Error>
+    where
+        W: WriteBits,
+    {
+        self.as_bytes().pack(writer)
+    }
+}
+
+// TODO: based on the length of the string, sacrifice compactness for byte alignment
+impl UnpackBits for String {
+    fn unpack<R>(reader: &mut R) -> Result<Self, R::Error>
+    where
+        R: ReadBits,
+    {
+        let bytes = Vec::<u8>::unpack(reader)?;
+        String::from_utf8(bytes).map_err(R::Error::custom)
+    }
+}
+
+impl<T> PackBits for Box<T>
+where
+    T: PackBits,
+{
+    fn pack<W>(&self, writer: &mut W) -> Result<(), W::Error>
+    where
+        W: WriteBits,
+    {
+        self.as_ref().pack(writer)
+    }
+}
+
+impl<T> UnpackBits for Box<T>
+where
+    T: UnpackBits,
+{
+    fn unpack<R>(reader: &mut R) -> Result<Self, R::Error>
+    where
+        R: ReadBits,
+    {
+        T::unpack(reader).map(Box::new)
     }
 }

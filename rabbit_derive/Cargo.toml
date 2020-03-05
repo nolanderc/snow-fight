@@ -1,0 +1,20 @@
+[package]
+name = "rabbit_derive"
+version = "0.1.0"
+authors = ["Christofer Nolander <christofer.nolander@gmail.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+name = "rabbit_derive"
+path = "src/lib.rs"
+proc-macro = true
+
+[dependencies]
+syn = "1.0.16"
+quote = "1.0.2"
+proc-macro2 = "1.0.9"
+
+[dev-dependencies.rabbit]
+path = "../rabbit"

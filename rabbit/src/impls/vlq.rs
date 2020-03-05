@@ -8,24 +8,24 @@
 //!
 //! # Representation
 //!
-//! The number of leading zeros tells us the number of additional bytes (we always need atleast one
-//! byte) required to parse the number:
+//! Given a 2^k-byte (8*2^k-bit) integer the binary representation is prefixed by a k-bit number n
+//! that tells us the number of bytes used in the encoding. That is, if n = 4 the integer is encoded
+//! using 4 + 1 = 5 bytes.
 //!
 //! ```text
-//! 1 additional bytes: 1
-//! 2 additional bytes: 01
-//! 3 additional bytes: 001
-//! 4 additional bytes: 0001
-//! 5 additional bytes: 00001
-//! 6 additional bytes: 000001
-//! 7 additional bytes: 0000001
-//! 8 additional bytes: 00000001
-//! 9 additional bytes: 000000001
-//! etc.
-//! ```
+//! Example for a 32-bit unsigned number i = 42:
 //!
-//! As a result we can store integers in the range 0-256 (inclusive) using only 9 bits, regardless
-//! of the width of the integer type.
+//! 32-bit = 4-byte -> 2^k = 4 -> k = 2
+//!
+//! i = 00101010 (in binary)
+//!
+//! i can be encoded using only 1 byte. So n = 1 - 1 = 0 = 00 (in binary)
+//!
+//! final encoding: 0000101010
+//!             |---^^
+//!             n  |--^^^^^^^^
+//!                i
+//! ```
 //!
 //!
 //! ## Signed numbers
@@ -55,22 +55,26 @@ pub(crate) trait VariableLengthQuantity: Default + Sized {
     fn decode<R: ReadBits>(reader: &mut R) -> Result<Self, R::Error>;
 }
 
+macro_rules! index_bits {
+    ($value:expr) => {{
+        let value = $value;
+        8 * std::mem::size_of_val(&value) as u32 - value.leading_zeros()
+    }}
+}
+
 macro_rules! impl_vlq_unsigned {
     ($ty:ty) => {
         impl VariableLengthQuantity for $ty {
             fn encode<W: WriteBits>(self, writer: &mut W) -> Result<(), W::Error> {
-                const SIZE: usize = std::mem::size_of::<$ty>();
+                const SIZE: $ty = std::mem::size_of::<$ty>() as $ty;
 
-                let implicit = self.leading_zeros() as usize;
-                let additional_bytes = (8 * SIZE - implicit).saturating_sub(1) / 8;
-
-                writer.write(0, additional_bytes as u8)?;
-                writer.write(1, 1)?;
+                let additional_bytes = index_bits!(self).saturating_sub(1) / 8;
+                writer.write(additional_bytes, index_bits!(SIZE - 1) as u8)?;
 
                 let mut bytes = additional_bytes + 1;
 
                 while bytes > 0 {
-                    let stride = usize::min(bytes, 4);
+                    let stride = u32::min(bytes, 4);
                     bytes -= stride;
 
                     let bit_offset = 8 * bytes;
@@ -83,26 +87,17 @@ macro_rules! impl_vlq_unsigned {
             }
 
             fn decode<R: ReadBits>(reader: &mut R) -> Result<Self, R::Error> {
-                const SIZE: usize = std::mem::size_of::<$ty>();
+                const SIZE: $ty = std::mem::size_of::<$ty>() as $ty;
 
-                // TODO: read multiple bits at once
-                let mut bytes = 1;
-                loop {
-                    let bit = reader.read(1)?;
-                    if bit == 0 {
-                        bytes += 1;
-                        if bytes > SIZE {
-                            return Err(R::Error::custom("integer capacity exceeded"));
-                        }
-                    } else {
-                        break;
-                    }
-                }
+                let additional_bytes = reader.read(index_bits!(SIZE - 1) as u8)?;
+                let mut bytes = additional_bytes
+                    .checked_add(1)
+                    .ok_or_else(|| R::Error::custom(""))?;
 
                 let mut value: $ty = 0;
 
-                while dbg!(bytes) > 0 {
-                    let stride = usize::min(bytes, 4);
+                while bytes > 0 {
+                    let stride = u32::min(bytes, 4);
                     bytes -= stride;
 
                     let next_bytes = reader.read(8 * stride as u8)?;
@@ -116,6 +111,7 @@ macro_rules! impl_vlq_unsigned {
     };
 }
 
+impl_vlq_unsigned!(u8);
 impl_vlq_unsigned!(u16);
 impl_vlq_unsigned!(u32);
 impl_vlq_unsigned!(u64);
@@ -152,6 +148,7 @@ macro_rules! impl_vlq_signed {
     };
 }
 
+impl_vlq_signed!(i8 as u8);
 impl_vlq_signed!(i16 as u16);
 impl_vlq_signed!(i32 as u32);
 impl_vlq_signed!(i64 as u64);
@@ -162,13 +159,20 @@ impl_vlq_signed!(isize as usize);
 mod tests {
     use super::*;
 
+    fn to_bytes<T>(value: T) -> Vec<u8>
+    where
+        T: VariableLengthQuantity,
+    {
+        let mut writer = crate::BitWriter::new();
+        value.encode(&mut writer).unwrap();
+        writer.finish()
+    }
+
     fn assert_lossless<T>(value: T)
     where
         T: Copy + VariableLengthQuantity + PartialEq + std::fmt::Debug,
     {
-        let mut writer = crate::BitWriter::new();
-        value.encode(&mut writer).unwrap();
-        let bytes = dbg!(writer.finish());
+        let bytes = to_bytes(value);
         let mut reader = crate::BitReader::new(&bytes);
         let encoded = T::decode(&mut reader).unwrap();
         assert_eq!(value, encoded);
@@ -188,7 +192,10 @@ mod tests {
         for i in 0..512u128 {
             assert_lossless(i);
         }
+    }
 
+    #[test]
+    fn encode_lossless_small_signed() {
         for i in -512..512i16 {
             assert_lossless(i);
         }
@@ -207,7 +214,10 @@ mod tests {
     fn encode_lossless_large() {
         assert_lossless(u64::max_value());
         assert_lossless(u128::max_value());
+    }
 
+    #[test]
+    fn encode_lossless_large_signed() {
         assert_lossless(i64::max_value());
         assert_lossless(i128::max_value());
         assert_lossless(i64::min_value());
