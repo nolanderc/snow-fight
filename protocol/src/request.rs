@@ -2,21 +2,21 @@
 use super::*;
 
 /// Sent from the client to the server.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PackBits, UnpackBits)]
 pub struct Request {
     pub channel: Channel,
     pub kind: RequestKind,
 }
 
 /// Different kinds of requests.
-#[derive(Debug, Clone, Serialize, Deserialize, From)]
+#[derive(Debug, Clone, PackBits, UnpackBits, From)]
 pub enum RequestKind {
     Init(Init),
     PlayerList,
     SendChat(String),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PackBits, UnpackBits)]
 pub struct Init {
     /// The requested nickname.
     pub nickname: String,

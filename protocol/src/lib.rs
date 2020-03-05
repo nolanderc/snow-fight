@@ -3,40 +3,33 @@
 //!
 //! Contains common data structures for the protocol implementation.
 
-mod de;
-mod error;
-mod leb128;
-mod ser;
-
 pub mod event;
 pub mod request;
 pub mod response;
-
-pub use de::from_bytes;
-pub use error::{Error, Result};
-pub use ser::to_bytes;
-
-use derive_more::From;
-use serde::{Deserialize, Serialize};
-use std::fmt::{self, Display, Formatter};
 
 pub use event::*;
 pub use request::*;
 pub use response::*;
 
+pub use rabbit::{to_bytes, from_bytes};
+
+use rabbit::{PackBits, UnpackBits};
+use derive_more::From;
+use std::fmt::{self, Display, Formatter};
+
 /// A unique identifier for a player.
-#[derive(Debug, Copy, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, PackBits, UnpackBits)]
 pub struct PlayerId(pub u32);
 
 /// Top-level data that can be sent from the server to the client.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PackBits, UnpackBits)]
 pub enum Message {
     Event(Event),
     Response(Response),
 }
 
 /// The id of a channel in which requests and responses are sent.
-#[derive(Debug, Copy, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Copy, Clone, PackBits, UnpackBits, PartialEq, Eq, Hash)]
 pub struct Channel(pub u32);
 
 impl Into<u32> for PlayerId {

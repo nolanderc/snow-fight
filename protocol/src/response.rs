@@ -2,14 +2,14 @@
 use super::*;
 
 /// Sent from the server to the client in response to a request.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PackBits, UnpackBits)]
 pub struct Response {
     pub channel: Channel,
     pub kind: ResponseKind,
 }
 
 /// Different kinds of responses.
-#[derive(Debug, Clone, Serialize, Deserialize, From)]
+#[derive(Debug, Clone, PackBits, UnpackBits, From)]
 pub enum ResponseKind {
     Error(String),
     Connect(Connect),
@@ -19,14 +19,14 @@ pub enum ResponseKind {
 }
 
 /// Establish the connection.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PackBits, UnpackBits)]
 pub struct Connect {
     /// The id assigned to the receiving client.
     pub player_id: PlayerId,
 }
 
 /// A list of the currently connected clients
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PackBits, UnpackBits)]
 pub struct PlayerList {
     pub players: Vec<PlayerId>,
 }
