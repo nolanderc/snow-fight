@@ -58,6 +58,10 @@ impl Connection {
             if let Err(e) = runtime.block_on(responder.run()) {
                 log::error!("{:#}", e);
             }
+
+            if let Err(e) = runtime.block_on(responder.socket.shutdown()) {
+                log::error!("failed to cleanly close socket: {:#}", e);
+            }
         });
 
         Ok(Connection {
