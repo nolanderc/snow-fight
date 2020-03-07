@@ -25,9 +25,11 @@ pub struct Renderer {
     queue: wgpu::Queue,
     surface: wgpu::Surface,
     swap_chain: wgpu::SwapChain,
-    framebuffer: wgpu::TextureView,
     pipeline: wgpu::RenderPipeline,
     bind_group: wgpu::BindGroup,
+
+    framebuffer: wgpu::TextureView,
+    depth_buffer: wgpu::TextureView,
 
     size: Size,
     samples: u32,
@@ -58,13 +60,6 @@ struct Size {
     height: u32,
 }
 
-#[derive(Debug, Copy, Clone, AsBytes)]
-#[repr(C)]
-struct Vertex {
-    position: [f32; 2],
-    color: [f32; 3],
-}
-
 #[derive(Debug, Copy, Clone)]
 #[repr(C)]
 struct Uniforms {
@@ -78,8 +73,31 @@ pub struct Camera {
     pub fov: f32,
 }
 
+#[derive(Debug, Copy, Clone, AsBytes)]
+#[repr(C)]
+struct Vertex {
+    position: [f32; 2],
+    color: [f32; 3],
+}
+
+impl Vertex {
+    const ATTRIBUTES: &'static [wgpu::VertexAttributeDescriptor] = &[
+        wgpu::VertexAttributeDescriptor {
+            offset: 0,
+            format: wgpu::VertexFormat::Float2,
+            shader_location: 0,
+        },
+        wgpu::VertexAttributeDescriptor {
+            offset: 8,
+            format: wgpu::VertexFormat::Float3,
+            shader_location: 1,
+        },
+    ];
+}
+
 impl Renderer {
     const COLOR_OUTPUT_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
+    const DEPTH_OUTPUT_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
     pub fn new(window: &Window, config: RendererConfig) -> Result<Renderer> {
         let surface = wgpu::Surface::create(window);
@@ -115,36 +133,22 @@ impl Renderer {
             .create_texture(&framebuffer_desc)
             .create_default_view();
 
+        // Create depth buffer
+        let depth_buffer_desc =
+            Self::depth_buffer_desc(config.width, config.height, config.samples);
+        let depth_buffer = device
+            .create_texture(&depth_buffer_desc)
+            .create_default_view();
+
         // Create a vertex and index buffer
-        let vertices = vec![
-            Vertex {
-                position: [-0.75, 0.5],
-                color: [1.0, 0.0, 0.0],
-            },
-            Vertex {
-                position: [-0.5, -0.5],
-                color: [1.0, 1.0, 0.0],
-            },
-            Vertex {
-                position: [0.5, -0.5],
-                color: [1.0, 1.0, 1.0],
-            },
-            Vertex {
-                position: [0.75, 0.5],
-                color: [1.0, 0.0, 1.0],
-            },
-        ];
-
-        let indices = vec![0, 1, 2, 2, 3, 0];
-
         let vertex_buffer = device
-            .create_buffer_mapped(vertices.len(), wgpu::BufferUsage::VERTEX)
-            .fill_from_slice(&vertices);
-
+            .create_buffer_mapped::<Vertex>(0, wgpu::BufferUsage::VERTEX)
+            .finish();
         let index_buffer = device
-            .create_buffer_mapped(indices.len(), wgpu::BufferUsage::INDEX)
-            .fill_from_slice(&indices);
+            .create_buffer_mapped::<u32>(0, wgpu::BufferUsage::INDEX)
+            .finish();
 
+        // Setup shader uniforms
         let uniforms = Uniforms {
             transform: cgmath::Matrix4::identity(),
         };
@@ -160,9 +164,11 @@ impl Renderer {
             queue,
             surface,
             swap_chain,
-            framebuffer,
             pipeline,
             bind_group,
+
+            framebuffer,
+            depth_buffer,
 
             size: Size {
                 width: config.width,
@@ -210,23 +216,20 @@ impl Renderer {
                 alpha_blend: wgpu::BlendDescriptor::REPLACE,
                 write_mask: wgpu::ColorWrite::ALL,
             }],
-            depth_stencil_state: None,
+            depth_stencil_state: Some(wgpu::DepthStencilStateDescriptor {
+                format: Self::DEPTH_OUTPUT_TEXTURE_FORMAT,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil_front: Default::default(),
+                stencil_back: Default::default(),
+                stencil_read_mask: 0,
+                stencil_write_mask: 0,
+            }),
             index_format: wgpu::IndexFormat::Uint32,
             vertex_buffers: &[wgpu::VertexBufferDescriptor {
                 stride: std::mem::size_of::<Vertex>() as u64,
                 step_mode: wgpu::InputStepMode::Vertex,
-                attributes: &[
-                    wgpu::VertexAttributeDescriptor {
-                        offset: 0,
-                        format: wgpu::VertexFormat::Float2,
-                        shader_location: 0,
-                    },
-                    wgpu::VertexAttributeDescriptor {
-                        offset: 8,
-                        format: wgpu::VertexFormat::Float3,
-                        shader_location: 1,
-                    },
-                ],
+                attributes: Vertex::ATTRIBUTES,
             }],
             sample_count: config.samples,
             sample_mask: !0,
@@ -257,6 +260,22 @@ impl Renderer {
             dimension: wgpu::TextureDimension::D2,
             format: Self::COLOR_OUTPUT_TEXTURE_FORMAT,
             usage: wgpu::TextureUsage::OUTPUT_ATTACHMENT,
+        }
+    }
+
+    fn depth_buffer_desc(width: u32, height: u32, sample_count: u32) -> wgpu::TextureDescriptor {
+        wgpu::TextureDescriptor {
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth: 1,
+            },
+            array_layer_count: 1,
+            mip_level_count: 1,
+            sample_count,
+            dimension: wgpu::TextureDimension::D2,
+            format: Self::DEPTH_OUTPUT_TEXTURE_FORMAT,
+            usage: wgpu::TextureUsage::WRITE_ALL,
         }
     }
 
@@ -302,6 +321,12 @@ impl Renderer {
             .device
             .create_texture(&framebuffer_desc)
             .create_default_view();
+
+        let depth_buffer_desc = Self::depth_buffer_desc(width, height, self.samples);
+        self.depth_buffer = self
+            .device
+            .create_texture(&depth_buffer_desc)
+            .create_default_view();
     }
 
     pub fn cleanup(&mut self) {
@@ -321,26 +346,14 @@ impl Renderer {
 
         let frame = self.swap_chain.get_next_texture();
 
-        let (color_attachment, resolve_target) = if self.samples == 1 {
-            (&frame.view, None)
-        } else {
-            (&self.framebuffer, Some(&frame.view))
-        };
+        let color_attachment =
+            Self::color_attachment_desc(&frame.view, &self.framebuffer, self.samples);
+
+        let depth_stencil_attachment = Self::depth_stencil_attachment(&self.depth_buffer);
 
         let render_pass_desc = wgpu::RenderPassDescriptor {
-            color_attachments: &[wgpu::RenderPassColorAttachmentDescriptor {
-                attachment: color_attachment,
-                resolve_target,
-                load_op: wgpu::LoadOp::Clear,
-                store_op: wgpu::StoreOp::Store,
-                clear_color: wgpu::Color {
-                    r: 0.2,
-                    g: 0.2,
-                    b: 0.2,
-                    a: 0.2,
-                },
-            }],
-            depth_stencil_attachment: None,
+            color_attachments: &[color_attachment],
+            depth_stencil_attachment: Some(depth_stencil_attachment),
         };
 
         {
@@ -357,6 +370,45 @@ impl Renderer {
         let render_commands = encoder.finish();
 
         self.queue.submit(&[render_commands]);
+    }
+
+    fn color_attachment_desc<'a>(
+        frame: &'a wgpu::TextureView,
+        framebuffer: &'a wgpu::TextureView,
+        samples: u32,
+    ) -> wgpu::RenderPassColorAttachmentDescriptor<'a> {
+        let (color_attachment, resolve_target) = if samples <= 1 {
+            (frame, None)
+        } else {
+            (framebuffer, Some(frame))
+        };
+
+        wgpu::RenderPassColorAttachmentDescriptor {
+            attachment: color_attachment,
+            resolve_target,
+            load_op: wgpu::LoadOp::Clear,
+            store_op: wgpu::StoreOp::Store,
+            clear_color: wgpu::Color {
+                r: 0.2,
+                g: 0.2,
+                b: 0.2,
+                a: 0.2,
+            },
+        }
+    }
+
+    fn depth_stencil_attachment<'a>(
+        depth_buffer: &'a wgpu::TextureView,
+    ) -> wgpu::RenderPassDepthStencilAttachmentDescriptor<&'a wgpu::TextureView> {
+        wgpu::RenderPassDepthStencilAttachmentDescriptor {
+            attachment: depth_buffer,
+            depth_load_op: wgpu::LoadOp::Clear,
+            depth_store_op: wgpu::StoreOp::Store,
+            clear_depth: 1.0,
+            stencil_load_op: wgpu::LoadOp::Clear,
+            stencil_store_op: wgpu::StoreOp::Store,
+            clear_stencil: 1,
+        }
     }
 
     fn update_buffers(&mut self, encoder: &mut wgpu::CommandEncoder) {

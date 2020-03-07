@@ -1,6 +1,8 @@
 //! Author(s):
 //! - Christofer Nolander (cnol@kth.se)
 
+#![allow(clippy::single_match)]
+
 #[macro_use]
 extern crate anyhow;
 
@@ -26,7 +28,8 @@ use structopt::StructOpt;
 use winit::{
     dpi::PhysicalSize,
     event::{
-        ElementState, Event as WinitEvent, KeyboardInput, ScanCode, VirtualKeyCode, WindowEvent,
+        DeviceEvent, ElementState, Event as WinitEvent, KeyboardInput, MouseButton,
+        MouseScrollDelta, ScanCode, VirtualKeyCode, WindowEvent,
     },
     event_loop::{ControlFlow, EventLoop},
     window::Window,
@@ -89,6 +92,7 @@ fn connect(options: &Options) -> Result<Connection> {
 #[derive(Debug, Copy, Clone)]
 enum Event {
     Redraw,
+    Resized(PhysicalSize<u32>),
     KeyDown {
         key: VirtualKeyCode,
         scancode: ScanCode,
@@ -97,7 +101,24 @@ enum Event {
         key: VirtualKeyCode,
         scancode: ScanCode,
     },
-    Resized(PhysicalSize<u32>),
+    CursorMoved {
+        x: f32,
+        y: f32,
+    },
+    MouseMotion {
+        delta_x: f32,
+        delta_y: f32,
+    },
+    MouseDown {
+        button: MouseButton,
+    },
+    MouseUp {
+        button: MouseButton,
+    },
+    MouseScroll {
+        delta_x: f32,
+        delta_y: f32,
+    },
 }
 
 fn dispatch_winit_event(
@@ -116,6 +137,12 @@ fn dispatch_winit_event(
             WindowEvent::Resized(size) => {
                 events.send(Event::Resized(size))?;
             }
+            WindowEvent::CursorMoved { position, .. } => {
+                events.send(Event::CursorMoved {
+                    x: position.x as f32,
+                    y: position.y as f32,
+                })?;
+            }
             WindowEvent::KeyboardInput { input, .. } => {
                 let KeyboardInput {
                     virtual_keycode,
@@ -131,6 +158,29 @@ fn dispatch_winit_event(
                     };
                     events.send(event)?;
                 }
+            }
+            WindowEvent::MouseInput { button, state, .. } => {
+                let event = match state {
+                    ElementState::Pressed => Event::MouseDown { button },
+                    ElementState::Released => Event::MouseUp { button },
+                };
+                events.send(event)?;
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let (delta_x, delta_y) = match delta {
+                    MouseScrollDelta::LineDelta(x, y) => (x, y),
+                    MouseScrollDelta::PixelDelta(pos) => (pos.x as f32, pos.y as f32),
+                };
+                events.send(Event::MouseScroll { delta_x, delta_y })?;
+            }
+            _ => {}
+        },
+        WinitEvent::DeviceEvent { event, .. } => match event {
+            DeviceEvent::MouseMotion { delta } => {
+                events.send(Event::MouseMotion {
+                    delta_x: delta.0 as f32,
+                    delta_y: delta.1 as f32,
+                })?;
             }
             _ => {}
         },
@@ -155,8 +205,8 @@ fn run(window: Window, events: mpsc::Receiver<Event>) -> Result<()> {
     let mut fps_timer = time::Instant::now();
     let mut frames = 0;
 
-    let mut w = 8u32;
-    let mut h = 8u32;
+    let mut grid_w = 8u32;
+    let mut grid_h = 8u32;
 
     let mut previous_frame = time::Instant::now();
 
@@ -166,7 +216,20 @@ fn run(window: Window, events: mpsc::Receiver<Event>) -> Result<()> {
         fov: 70.0,
     };
 
+    let mut theta = 90f32.to_radians();
+    let mut phi = 45f32.to_radians();
+    let mut distance = 5.0;
+
+    let mut theta_vel = 0.0;
+    let mut phi_vel = 0.0;
+    let mut distance_vel = 0.0;
+
+    let mut rotating = false;
+    let mut zooming = false;
+
     let mut pressed_keys = HashSet::new();
+
+    let mut window_size = window.inner_size();
 
     loop {
         frames += 1;
@@ -179,7 +242,7 @@ fn run(window: Window, events: mpsc::Receiver<Event>) -> Result<()> {
                 "{} @ {} fps ({} triangles)",
                 TITLE,
                 frames_per_second.round(),
-                w * h * 2
+                grid_w * grid_h * 2
             ));
         }
 
@@ -195,9 +258,9 @@ fn run(window: Window, events: mpsc::Receiver<Event>) -> Result<()> {
                 }
                 Ok(event) => match event {
                     Event::Resized(size) => {
+                        window_size = size;
                         renderer.set_size(size.width, size.height);
                     }
-
                     Event::KeyDown { key, .. } => {
                         pressed_keys.insert(key);
                     }
@@ -206,12 +269,39 @@ fn run(window: Window, events: mpsc::Receiver<Event>) -> Result<()> {
 
                         match key {
                             VirtualKeyCode::Escape => return Ok(()),
-                            VirtualKeyCode::Right => w += 1,
-                            VirtualKeyCode::Left => w = w.saturating_sub(1),
-                            VirtualKeyCode::Up => h += 1,
-                            VirtualKeyCode::Down => h = h.saturating_sub(1),
+                            VirtualKeyCode::Right => grid_w += 1,
+                            VirtualKeyCode::Left => grid_w = grid_w.saturating_sub(1),
+                            VirtualKeyCode::Up => grid_h += 1,
+                            VirtualKeyCode::Down => grid_h = grid_h.saturating_sub(1),
                             _ => {}
                         }
+                    }
+
+                    Event::MouseDown { button } => match button {
+                        MouseButton::Left => rotating = true,
+                        MouseButton::Right => zooming = true,
+                        _ => {}
+                    },
+                    Event::MouseUp { button } => match button {
+                        MouseButton::Left => rotating = false,
+                        MouseButton::Right => zooming = false,
+                        _ => {}
+                    },
+
+                    Event::MouseMotion { delta_x, delta_y } => {
+                        if rotating {
+                            let rx = 10.0 * delta_x / window_size.width as f32;
+                            let ry = 10.0 * delta_y / window_size.height as f32;
+                            theta_vel -= rx;
+                            phi_vel += ry;
+                        } else if zooming {
+                            let ry = 10.0 * delta_y / window_size.height as f32;
+                            distance_vel += ry;
+                        }
+                    }
+
+                    Event::MouseScroll { delta_y, .. } => {
+                        distance_vel -= 0.05 * delta_y;
                     }
 
                     _ => {}
@@ -234,20 +324,40 @@ fn run(window: Window, events: mpsc::Receiver<Event>) -> Result<()> {
 
         let mut frame = renderer.next_frame();
 
+        theta += delta_time * theta_vel;
+        phi = (phi + delta_time * phi_vel).max(-1.5).min(1.5);
+        distance = (distance + delta_time * distance * distance_vel).max(0.1);
+
+        let rotate_friction: f32 = if rotating { 0.005 } else { 0.1 };
+        let zoom_friction: f32 = if zooming { 0.005 } else { 0.1 };
+
+        theta_vel *= rotate_friction.powf(delta_time);
+        phi_vel *= rotate_friction.powf(delta_time);
+        distance_vel *= zoom_friction.powf(delta_time);
+
+        let (sin_theta, cos_theta) = theta.sin_cos();
+        let (sin_phi, cos_phi) = phi.sin_cos();
+
+        let dx = cos_theta * cos_phi;
+        let dy = sin_theta * cos_phi;
+        let dz = sin_phi;
+
+        camera.position = [distance * dx, distance * dy, distance * dz];
+
         frame.set_camera(camera);
 
-        for col in 0..w {
-            for row in 0..h {
+        for col in 0..grid_w {
+            for row in 0..grid_h {
                 let rect = Rect {
-                    x: 2.0 * col as f32 / w as f32 - 1.0,
-                    y: 2.0 * row as f32 / h as f32 - 1.0,
-                    w: 2.0 / w as f32,
-                    h: 2.0 / h as f32,
+                    x: 2.0 * col as f32 / grid_w as f32 - 1.0,
+                    y: 2.0 * row as f32 / grid_h as f32 - 1.0,
+                    w: 2.0 / grid_w as f32,
+                    h: 2.0 / grid_h as f32,
                 };
 
                 let r = 1.0;
-                let g = (col + 1) as f32 / w as f32;
-                let b = (row + 1) as f32 / h as f32;
+                let g = (col + 1) as f32 / grid_w as f32;
+                let b = (row + 1) as f32 / grid_h as f32;
 
                 frame.draw_rect(rect, [r, g, b]);
             }

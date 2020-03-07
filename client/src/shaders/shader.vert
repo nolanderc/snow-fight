@@ -14,7 +14,7 @@ layout(set = 0, binding = 0) uniform Locals {
 };
 
 void main() {
-    gl_Position = u_transform * vec4(v_position, 0.0, 1.0);
+    gl_Position = u_transform * vec4(v_position, dot(v_position, v_position), 1.0);
     f_color = vec4(v_color, 1.0);
 }
 
