@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::oneshot;
 use protocol::{Channel, Event, Message, Request, RequestKind, ResponseKind};
 use socket::{Connection as Socket, Delivery};
