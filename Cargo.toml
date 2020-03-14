@@ -8,6 +8,8 @@ members = [
     "socket",
     "rabbit",
     "rabbit_derive",
+    "logic",
+    "wgpu_shader"
 ]
 
 

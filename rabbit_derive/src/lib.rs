@@ -33,6 +33,14 @@ impl Errors {
     }
 }
 
+#[proc_macro_derive(Rabbit)]
+pub fn derive_rabbit(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let mut pack = derive_pack_bits(item.clone());
+    let unpack = derive_unpack_bits(item);
+    pack.extend(unpack);
+    pack
+}
+
 #[proc_macro_derive(PackBits)]
 pub fn derive_pack_bits(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = syn::parse_macro_input!(item as DeriveInput);

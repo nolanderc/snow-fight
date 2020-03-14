@@ -12,17 +12,20 @@ mod message;
 mod oneshot;
 mod options;
 mod renderer;
+mod systems;
 
 use message::Connection;
 use options::Options;
-use renderer::{Camera, Rect, Renderer, RendererConfig};
+use renderer::{Renderer, RendererConfig};
+use systems::{CameraController, WindowState};
 
 use anyhow::{Context, Result};
+use cgmath::prelude::*;
+use logic::components::Position;
+use logic::legion::prelude::*;
 use protocol::Init;
-use std::collections::HashSet;
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc};
 use std::thread;
-use std::time;
 use structopt::StructOpt;
 
 use winit::{
@@ -47,7 +50,7 @@ fn main() -> Result<()> {
 
     thread::spawn(move || {
         if let Err(e) = run(window, event_rx).context("game loop exited") {
-            log::error!("{:#}", e);
+            log::error!("{:?}", e);
         }
     });
 
@@ -191,179 +194,163 @@ fn dispatch_winit_event(
 }
 
 fn run(window: Window, events: mpsc::Receiver<Event>) -> Result<()> {
+    let window = Arc::new(window);
+
     let size = window.inner_size();
 
-    let mut renderer = Renderer::new(
+    let renderer = Renderer::new(
         &window,
         RendererConfig {
             width: size.width,
             height: size.height,
-            samples: 4,
+            samples: 1,
         },
     )?;
 
-    let mut fps_timer = time::Instant::now();
-    let mut frames = 0;
+    let mut world = logic::create_world();
+    systems::init_world(&mut world);
+    world.resources.insert(renderer);
+    world.resources.insert(WindowState::new(window));
 
-    let mut grid_w = 8u32;
-    let mut grid_h = 8u32;
+    let player = logic::add_player(&mut world);
+    world
+        .resources
+        .get_mut::<CameraController>()
+        .unwrap()
+        .target = Some(player);
 
-    let mut previous_frame = time::Instant::now();
+    let schedule = logic::add_systems(Default::default())
+        .add_system(systems::fps_display())
+        .add_system(systems::player_movement())
+        .add_system(systems::update_camera())
+        .flush()
+        .add_system(systems::render());
 
-    let mut camera = Camera {
-        position: [0.0, -5.0, 2.0],
-        focus: [0.0, 0.0, 0.0],
-        fov: 70.0,
-    };
-
-    let mut theta = 90f32.to_radians();
-    let mut phi = 45f32.to_radians();
-    let mut distance = 5.0;
-
-    let mut theta_vel = 0.0;
-    let mut phi_vel = 0.0;
-    let mut distance_vel = 0.0;
-
-    let mut rotating = false;
-    let mut zooming = false;
-
-    let mut pressed_keys = HashSet::new();
-
-    let mut window_size = window.inner_size();
+    let mut schedule = schedule.build();
 
     loop {
-        frames += 1;
-        let elapsed = fps_timer.elapsed();
-        if elapsed.as_secs_f32() > 0.5 {
-            let frames_per_second = frames as f32 / elapsed.as_secs_f32();
-            fps_timer = time::Instant::now();
-            frames = 0;
-            window.set_title(&format!(
-                "{} @ {} fps ({} triangles)",
-                TITLE,
-                frames_per_second.round(),
-                grid_w * grid_h * 2
-            ));
-        }
-
-        let delta_time = previous_frame.elapsed().as_secs_f32();
-        previous_frame = time::Instant::now();
-
-        loop {
-            let event = events.try_recv();
-            match event {
-                Err(mpsc::TryRecvError::Empty) => break,
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    return Err(anyhow!("event loop disconnected"))
-                }
-                Ok(event) => match event {
-                    Event::Resized(size) => {
-                        window_size = size;
-                        renderer.set_size(size.width, size.height);
-                    }
-                    Event::KeyDown { key, .. } => {
-                        pressed_keys.insert(key);
-                    }
-                    Event::KeyUp { key, .. } => {
-                        pressed_keys.remove(&key);
-
-                        match key {
-                            VirtualKeyCode::Escape => return Ok(()),
-                            VirtualKeyCode::Right => grid_w += 1,
-                            VirtualKeyCode::Left => grid_w = grid_w.saturating_sub(1),
-                            VirtualKeyCode::Up => grid_h += 1,
-                            VirtualKeyCode::Down => grid_h = grid_h.saturating_sub(1),
-                            _ => {}
-                        }
-                    }
-
-                    Event::MouseDown { button } => match button {
-                        MouseButton::Left => rotating = true,
-                        MouseButton::Right => zooming = true,
-                        _ => {}
-                    },
-                    Event::MouseUp { button } => match button {
-                        MouseButton::Left => rotating = false,
-                        MouseButton::Right => zooming = false,
-                        _ => {}
-                    },
-
-                    Event::MouseMotion { delta_x, delta_y } => {
-                        if rotating {
-                            let rx = 10.0 * delta_x / window_size.width as f32;
-                            let ry = 10.0 * delta_y / window_size.height as f32;
-                            theta_vel -= rx;
-                            phi_vel += ry;
-                        } else if zooming {
-                            let ry = 10.0 * delta_y / window_size.height as f32;
-                            distance_vel += ry;
-                        }
-                    }
-
-                    Event::MouseScroll { delta_y, .. } => {
-                        distance_vel -= 0.05 * delta_y;
-                    }
-
-                    _ => {}
-                },
+        while match events.try_recv() {
+            Err(mpsc::TryRecvError::Empty) => false,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                return Err(anyhow!("event loop disconnected"))
             }
-        }
+            Ok(event) => match handle_event(event, &mut world) {
+                ShouldExit::Exit => return Ok(()),
+                ShouldExit::Continue => true,
+            },
+        } {}
 
-        if pressed_keys.contains(&VirtualKeyCode::Comma) {
-            camera.position[1] += 3.0 * delta_time;
-        }
-        if pressed_keys.contains(&VirtualKeyCode::A) {
-            camera.position[0] -= 3.0 * delta_time;
-        }
-        if pressed_keys.contains(&VirtualKeyCode::O) {
-            camera.position[1] -= 3.0 * delta_time;
-        }
-        if pressed_keys.contains(&VirtualKeyCode::E) {
-            camera.position[0] += 3.0 * delta_time;
-        }
-
-        let mut frame = renderer.next_frame();
-
-        theta += delta_time * theta_vel;
-        phi = (phi + delta_time * phi_vel).max(-1.5).min(1.5);
-        distance = (distance + delta_time * distance * distance_vel).max(0.1);
-
-        let rotate_friction: f32 = if rotating { 0.005 } else { 0.1 };
-        let zoom_friction: f32 = if zooming { 0.005 } else { 0.1 };
-
-        theta_vel *= rotate_friction.powf(delta_time);
-        phi_vel *= rotate_friction.powf(delta_time);
-        distance_vel *= zoom_friction.powf(delta_time);
-
-        let (sin_theta, cos_theta) = theta.sin_cos();
-        let (sin_phi, cos_phi) = phi.sin_cos();
-
-        let dx = cos_theta * cos_phi;
-        let dy = sin_theta * cos_phi;
-        let dz = sin_phi;
-
-        camera.position = [distance * dx, distance * dy, distance * dz];
-
-        frame.set_camera(camera);
-
-        for col in 0..grid_w {
-            for row in 0..grid_h {
-                let rect = Rect {
-                    x: 2.0 * col as f32 / grid_w as f32 - 1.0,
-                    y: 2.0 * row as f32 / grid_h as f32 - 1.0,
-                    w: 2.0 / grid_w as f32,
-                    h: 2.0 / grid_h as f32,
-                };
-
-                let r = 1.0;
-                let g = (col + 1) as f32 / grid_w as f32;
-                let b = (row + 1) as f32 / grid_h as f32;
-
-                frame.draw_rect(rect, [r, g, b]);
-            }
-        }
-
-        frame.submit();
-        renderer.cleanup();
+        schedule.execute(&mut world);
     }
+}
+
+enum ShouldExit {
+    Exit,
+    Continue,
+}
+
+fn handle_event(event: Event, world: &mut World) -> ShouldExit {
+    match event {
+        Event::Resized(size) => {
+            let mut window = world.resources.get_mut::<WindowState>().unwrap();
+            window.size = size;
+
+            let mut renderer = world.resources.get_mut::<Renderer>().unwrap();
+            renderer.set_size(size.width, size.height);
+        }
+        Event::KeyDown { key, .. } => {
+            {
+                let mut window = world.resources.get_mut::<WindowState>().unwrap();
+                window.key_pressed(key);
+            }
+
+            match key {
+                VirtualKeyCode::Tab => switch_closest(world),
+                _ => {}
+            }
+        }
+        Event::KeyUp { key, .. } => {
+            let mut window = world.resources.get_mut::<WindowState>().unwrap();
+            window.key_released(key);
+
+            match key {
+                VirtualKeyCode::Escape => return ShouldExit::Exit,
+                _ => {}
+            }
+        }
+
+        Event::MouseDown { button } => {
+            let mut window = world.resources.get_mut::<WindowState>().unwrap();
+            window.button_pressed(button);
+        }
+        Event::MouseUp { button } => {
+            let mut window = world.resources.get_mut::<WindowState>().unwrap();
+            window.button_released(button);
+        }
+
+        Event::MouseMotion { delta_x, delta_y } => {
+            rotate_camera(world, delta_x, delta_y);
+        }
+
+        Event::MouseScroll { delta_y, .. } => {
+            let window = world.resources.get::<WindowState>().unwrap();
+            if window.key_down(VirtualKeyCode::Space) {
+                let mut controller = world.resources.get_mut::<CameraController>().unwrap();
+                controller.distance_impulse(-0.01 * delta_y)
+            }
+        }
+
+        _ => {}
+    }
+
+    ShouldExit::Continue
+}
+
+fn rotate_camera(world: &mut World, dx: f32, dy: f32) {
+    let window = world.resources.get::<WindowState>().unwrap();
+    let mut controller = world.resources.get_mut::<CameraController>().unwrap();
+
+    if window.key_down(VirtualKeyCode::Space) {
+        let rx = 4.0 * dx / window.size.width as f32;
+        let ry = 4.0 * dy / window.size.height as f32;
+
+        if window.button_down(MouseButton::Left) {
+            controller.rotation_impulse(-rx, ry);
+        } else if window.button_down(MouseButton::Right) {
+            controller.distance_impulse(2.0 * ry);
+        }
+    }
+}
+
+fn switch_closest(world: &mut World) {
+    let target = world.resources.get::<CameraController>().unwrap().target;
+    if let Some(target) = target {
+        if let Some(new) = find_closest(target, &*world) {
+            world
+                .resources
+                .get_mut::<CameraController>()
+                .unwrap()
+                .target = Some(new);
+        }
+    }
+}
+
+fn find_closest(target: Entity, world: &World) -> Option<Entity> {
+    let center = **world.get_component::<Position>(target)?;
+
+    let mut new = None;
+    let mut closest = f32::max_value();
+
+    let query = Read::<Position>::query();
+    let positions = query.iter_entities_immutable(world);
+
+    for (entity, position) in positions {
+        let distance = position.distance(center);
+        if entity != target && distance < closest {
+            new = Some(entity);
+            closest = distance;
+        }
+    }
+
+    new
 }
