@@ -19,7 +19,7 @@ pub fn create_world() -> World {
     let mut world = World::new();
     world.resources.insert(TimeStep::default());
 
-    let size = 10;
+    let size = 5;
     for x in -size..=size {
         for y in -size..=size {
             let position = Position([x as f32, y as f32, 0.0].into());

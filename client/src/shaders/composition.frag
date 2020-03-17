@@ -15,9 +15,10 @@ layout(set = 0, binding = 2) uniform texture2D g_color;
 layout(set = 0, binding = 3) uniform texture2D g_normal;
 layout(set = 0, binding = 4) uniform texture2D g_position;
 
-const float edge_size = 0.001;
 const float EDGE_DEPTH = 0.001;
 const float EDGE_NORMAL = 0.01;
+
+const float LIGHT_AMBIENT = 0.4;
 
 vec4 color;
 vec3 normal;
@@ -65,12 +66,11 @@ float outline() {
 
 /// Calculate lighting using the Phong model
 float phong() {
-    vec3 light_delta = position - u_light_pos;
+    vec3 light_delta = vec3(1.5, 2.0, -2.5);
     vec3 light_dir = normalize(light_delta);
-    float attenuation = length(light_delta);
 
     float incoming = max(0.0, dot(normal, -light_dir));
-    float brightness = 0.2 + 0.8 * incoming / pow(attenuation, 1.5);
+    float brightness = LIGHT_AMBIENT + (1 - LIGHT_AMBIENT) * incoming;
 
     return brightness;
 }
