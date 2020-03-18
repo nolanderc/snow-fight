@@ -9,7 +9,7 @@ use winit::event::{MouseButton, VirtualKeyCode};
 use winit::window::Window;
 
 use cgmath::prelude::*;
-use cgmath::{Point3, Vector2, Vector3};
+use cgmath::{Vector2, Vector3};
 
 use logic::components::{Model, Position};
 use logic::legion::prelude::*;
@@ -92,7 +92,6 @@ pub fn player_movement() -> System {
                     if !movement.is_zero() {
                         let direction = controller.direction();
                         let forward = Vector3::new(direction.x, direction.y, 0.0).normalize();
-                        dbg!(forward);
                         let up = Vector3::unit_z();
                         let right = forward.cross(up);
 
@@ -146,19 +145,30 @@ pub fn render() -> logic::System {
 
             frame.set_camera(**camera);
 
+            frame.draw(
+                Model::Rect,
+                Instance {
+                    position: [0.0, 0.0, 0.0].into(),
+                    scale: [1000.0; 3].into(),
+                    color: [0.1, 0.5, 0.1],
+                },
+            );
+
             for (position, model) in query.iter(world) {
                 let mut instance = Instance {
-                    position: Point3::from_vec(position.0 - Point3::new(0.5, 0.5, 0.0)),
+                    position: position.0,
                     scale: [1.0, 1.0, 1.0].into(),
                     color: [1.0; 3],
                 };
 
                 match *model {
                     Model::Rect => {
+                        instance.position.z += 0.01;
                         instance.color = [1.0, 0.0, 0.0];
                     }
 
                     Model::Circle => {
+                        instance.position.z += 0.01;
                         instance.scale = [0.9; 3].into();
                         instance.color = [0.0, 1.0, 0.0];
                     }

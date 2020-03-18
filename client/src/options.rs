@@ -1,8 +1,8 @@
 //! Author(s):
 //! - Christofer Nolander (cnol@kth.se)
 
-use structopt::StructOpt;
 use std::net::IpAddr;
+use structopt::StructOpt;
 
 #[derive(StructOpt)]
 pub struct Options {
@@ -18,5 +18,3 @@ pub struct Options {
     #[structopt(long, default_value = "info")]
     pub log_level: log::LevelFilter,
 }
-
-

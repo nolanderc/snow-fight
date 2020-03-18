@@ -124,7 +124,7 @@ impl GBuffer {
         let depth = Self::create_buffer_texture(&device, size, Self::DEPTH_TEXTURE_FORMAT);
 
         let bind_group_layout = Self::create_bind_group_layout(&device);
-        let pipeline = Self::create_render_pipeline(&device, size, &bind_group_layout);
+        let pipeline = Self::create_render_pipeline(&device, &bind_group_layout);
 
         let uniform_buffer = Self::create_uniform_buffer(&device, Uniforms::default());
 
@@ -162,7 +162,7 @@ impl GBuffer {
             },
             array_layer_count: 1,
             mip_level_count: 1,
-            sample_count: size.samples,
+            sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format,
             usage: wgpu::TextureUsage::WRITE_ALL | wgpu::TextureUsage::READ_ALL,
@@ -173,7 +173,6 @@ impl GBuffer {
 
     fn create_render_pipeline(
         device: &wgpu::Device,
-        size: Size,
         bind_group_layout: &wgpu::BindGroupLayout,
     ) -> wgpu::RenderPipeline {
         let layout = Self::create_pipeline_layout(device, bind_group_layout);
@@ -192,7 +191,7 @@ impl GBuffer {
             depth_stencil_state: Some(Self::DEPTH_STENCIL_STATE),
             index_format: wgpu::IndexFormat::Uint32,
             vertex_buffers: Self::VERTEX_BUFFERS,
-            sample_count: size.samples,
+            sample_count: 1,
             sample_mask: !0,
             alpha_to_coverage_enabled: false,
         };

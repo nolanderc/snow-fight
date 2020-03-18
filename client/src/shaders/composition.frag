@@ -15,17 +15,23 @@ layout(set = 0, binding = 1) uniform sampler g_sampler;
 layout(set = 0, binding = 2) uniform texture2D g_color;
 layout(set = 0, binding = 3) uniform texture2D g_normal;
 layout(set = 0, binding = 4) uniform texture2D g_position;
+layout(set = 0, binding = 5) uniform texture2D g_ssao;
 
 const float EDGE_DEPTH = 0.01;
 const float EDGE_NORMAL = 0.01;
 
 const float LIGHT_AMBIENT = 0.4;
+const float FOG_DISTANCE = 30.0;
 
 vec4 f_color;
 vec3 f_normal;
 vec3 f_position;
 float f_depth;
 float f_distance;
+
+vec3 f_camera_dir;
+
+float fog_depth = 1e6;
 
 /// Initialize global variables
 void init() {
@@ -34,6 +40,8 @@ void init() {
     f_depth = texture(sampler2D(g_normal, g_sampler), tex_coord).w;
     f_position = texture(sampler2D(g_position, g_sampler), tex_coord).xyz;
     f_distance = distance(f_position, u_camera_pos);
+
+    f_camera_dir = normalize(f_position - u_camera_pos);
 }
 
 /// Find edges using a sobel kernel.
@@ -49,13 +57,13 @@ vec4 edge() {
 
             vec2 tex = tex_coord + delta * vec2(x, y);
 
-            vec3 normal = texture(sampler2D(g_normal, g_sampler), tex).xyz;
-
             vec3 position = texture(sampler2D(g_position, g_sampler), tex).xyz;
-            float depth = f_depth > 2 ? f_depth : distance(position, u_camera_pos);
+            float dist = distance(position, u_camera_pos);
+            fog_depth = min(fog_depth, dist);
 
+            vec3 normal = texture(sampler2D(g_normal, g_sampler), tex).xyz;
+            float depth = f_depth > 2 ? f_depth : dist;
             sum += scalar * vec4(normal, depth);
-
         }
     }
 
@@ -64,8 +72,7 @@ vec4 edge() {
 
 /// Find the outline of geometry using the normal and depth buffer.
 float outline() {
-    vec3 camera_dir = normalize(f_position - u_camera_pos);
-    float incidence = dot(f_normal, -camera_dir);
+    float incidence = dot(f_normal, -f_camera_dir);
 
     vec4 edges = edge();
 
@@ -83,7 +90,10 @@ float phong() {
     float incoming = max(0.0, dot(f_normal, -light_dir));
     float brightness = LIGHT_AMBIENT + (1 - LIGHT_AMBIENT) * incoming;
 
-    return brightness;
+    vec3 reflection = reflect(light_dir, f_normal);
+    float specular = max(0, dot(reflection, -f_camera_dir));
+
+    return brightness + pow(specular, 4);
 }
 
 void main() {
@@ -91,6 +101,15 @@ void main() {
 
     float outline = outline();
     float brightness = phong();
+    float ssao = texture(sampler2D(g_ssao, g_sampler), tex_coord).r;
 
-    out_color = brightness * f_color * vec4(1.0 - outline);
+    vec4 fog_color = vec4(0.4, 0.7, 0.9, 0.0);
+    vec4 outline_color = vec4(0.0);
+
+    vec4 diffuse = f_depth > 2 ? fog_color : brightness * f_color;
+    vec4 base_color = mix(diffuse, outline_color, outline);
+
+    float fog_factor = fog_depth / u_camera_far;
+    out_color = mix(base_color, fog_color, clamp(pow(fog_factor, 2), 0.0, 1.0));
+    out_color = vec4(ssao);
 }

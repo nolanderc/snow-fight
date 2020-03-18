@@ -40,4 +40,3 @@ impl<T> Receiver<T> {
         self.receiver.try_recv()
     }
 }
-

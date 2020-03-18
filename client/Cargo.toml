@@ -24,6 +24,7 @@ cgmath = "0.17.0"
 logic = { path = "../logic" }
 image = "0.23.0"
 wgpu_shader = { path = "../wgpu_shader" }
+rand = "0.7.3"
 
 [dependencies.tokio]
 version = "0.2.11"
