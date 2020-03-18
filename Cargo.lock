@@ -224,6 +224,7 @@ dependencies = [
  "log",
  "logic",
  "protocol",
+ "rand 0.7.3",
  "serde",
  "serde_json",
  "socket",

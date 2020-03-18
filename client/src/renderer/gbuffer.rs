@@ -185,7 +185,11 @@ impl GBuffer {
             layout: &layout,
             vertex_stage: shaders.vertex_stage(),
             fragment_stage: Some(shaders.fragment_stage()),
-            rasterization_state: Some(Default::default()),
+            rasterization_state: Some(wgpu::RasterizationStateDescriptor {
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: wgpu::CullMode::Back,
+                ..Default::default()
+            }),
             primitive_topology: wgpu::PrimitiveTopology::TriangleList,
             color_states: Self::COLOR_STATES,
             depth_stencil_state: Some(Self::DEPTH_STENCIL_STATE),

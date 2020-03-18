@@ -13,11 +13,9 @@ use winit::window::Window;
 
 mod gbuffer;
 mod models;
-mod ssao;
 
 use gbuffer::GBuffer;
 use models::ModelRegistry;
-use ssao::Ssao;
 
 /// `cgmath` uses OpenGL's coordinate system while WebGPU uses 
 #[rustfmt::skip]
@@ -50,7 +48,6 @@ pub struct Renderer {
 
     framebuffer: wgpu::TextureView,
     gbuffer: GBuffer,
-    ssao: Ssao,
 
     size: Size,
     samples: u32,
@@ -111,7 +108,6 @@ struct Bindings<'a> {
     color: &'a wgpu::TextureView,
     normal: &'a wgpu::TextureView,
     position: &'a wgpu::TextureView,
-    ssao: &'a wgpu::TextureView,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -191,7 +187,6 @@ impl Renderer {
             .create_default_view();
 
         let gbuffer = GBuffer::new(device.clone(), size);
-        let ssao = Ssao::new(device.clone(), size, &gbuffer);
 
         // Load models
         let models = ModelRegistry::load()?;
@@ -221,7 +216,6 @@ impl Renderer {
             color: gbuffer.color_buffer(),
             normal: gbuffer.normal_buffer(),
             position: gbuffer.position_buffer(),
-            ssao: ssao.output(),
         };
 
         let bind_group = Self::create_bind_group(&device, &bind_group_layout, bindings);
@@ -239,7 +233,6 @@ impl Renderer {
 
             framebuffer,
             gbuffer,
-            ssao,
 
             size: Size {
                 width: config.width,
@@ -297,7 +290,7 @@ impl Renderer {
             format: Self::COLOR_OUTPUT_TEXTURE_FORMAT,
             width,
             height,
-            present_mode: wgpu::PresentMode::Vsync,
+            present_mode: wgpu::PresentMode::NoVsync,
         }
     }
 
@@ -370,14 +363,6 @@ impl Renderer {
                         dimension: wgpu::TextureViewDimension::D2,
                     },
                 },
-                wgpu::BindGroupLayoutBinding {
-                    binding: 5,
-                    visibility: wgpu::ShaderStage::FRAGMENT,
-                    ty: wgpu::BindingType::SampledTexture {
-                        multisampled: false,
-                        dimension: wgpu::TextureViewDimension::D2,
-                    },
-                },
             ],
         }
     }
@@ -413,10 +398,6 @@ impl Renderer {
                     binding: 4,
                     resource: wgpu::BindingResource::TextureView(bindings.position),
                 },
-                wgpu::Binding {
-                    binding: 5,
-                    resource: wgpu::BindingResource::TextureView(bindings.ssao),
-                },
             ],
         };
 
@@ -424,7 +405,7 @@ impl Renderer {
     }
 
     pub fn set_size(&mut self, width: u32, height: u32) {
-        self.size = Size { width, height };
+        self.size = Size { width, height};
 
         let swap_chain_desc = Self::swap_chain_desc(width, height);
         self.swap_chain = self
@@ -438,7 +419,6 @@ impl Renderer {
             .create_default_view();
 
         self.gbuffer = GBuffer::new(self.device.clone(), self.size);
-        self.ssao = Ssao::new(self.device.clone(), self.size, &self.gbuffer);
 
         let sampler = Self::create_sampler(&self.device);
 
@@ -448,7 +428,6 @@ impl Renderer {
             color: self.gbuffer.color_buffer(),
             normal: self.gbuffer.normal_buffer(),
             position: self.gbuffer.position_buffer(),
-            ssao: self.ssao.output(),
         };
 
         self.bind_group = Self::create_bind_group(&self.device, &self.bind_group_layout, bindings);
@@ -499,18 +478,6 @@ impl Renderer {
                 render_pass.set_vertex_buffers(1, &[(&instance_buffer, 0)]);
                 render_pass.draw_indexed(data.indices.clone(), 0, 0..instances.len() as u32);
             }
-        }
-
-        // SSAO
-        {
-            let uniforms = ssao::Uniforms {
-                transform: self.uniforms.transform,
-                camera_pos: self.uniforms.camera_pos,
-            };
-
-            let mut render_pass = self.ssao.begin_render_pass(&mut encoder, uniforms);
-            render_pass.draw(0..3, 0..1);
-            render_pass.draw(1..4, 0..1);
         }
 
         // Final composit

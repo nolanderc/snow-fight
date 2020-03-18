@@ -15,7 +15,6 @@ layout(set = 0, binding = 1) uniform sampler g_sampler;
 layout(set = 0, binding = 2) uniform texture2D g_color;
 layout(set = 0, binding = 3) uniform texture2D g_normal;
 layout(set = 0, binding = 4) uniform texture2D g_position;
-layout(set = 0, binding = 5) uniform texture2D g_ssao;
 
 const float EDGE_DEPTH = 0.01;
 const float EDGE_NORMAL = 0.01;
@@ -101,7 +100,6 @@ void main() {
 
     float outline = outline();
     float brightness = phong();
-    float ssao = texture(sampler2D(g_ssao, g_sampler), tex_coord).r;
 
     vec4 fog_color = vec4(0.4, 0.7, 0.9, 0.0);
     vec4 outline_color = vec4(0.0);
@@ -111,5 +109,4 @@ void main() {
 
     float fog_factor = fog_depth / u_camera_far;
     out_color = mix(base_color, fog_color, clamp(pow(fog_factor, 2), 0.0, 1.0));
-    out_color = vec4(ssao);
 }

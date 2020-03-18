@@ -23,7 +23,7 @@ pub fn create_world() -> World {
 
     let mut rng = rand::thread_rng();
 
-    let trees = 10_000;
+    let trees = 1_000;
     let size = 80.0;
     for _ in 0..trees {
         let x = rng.gen_range(-size / 2.0, size / 2.0);
