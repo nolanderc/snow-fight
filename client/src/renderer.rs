@@ -26,6 +26,9 @@ pub const OPENGL_TO_WGPU_MATRIX: Matrix4<f32> = Matrix4::new(
     0.0,  0.0,  0.5,  1.0,
 );
 
+const CLIP_NEAR: f32 = 0.1;
+const CLIP_FAR: f32 = 40.0;
+
 #[derive(Debug, Copy, Clone)]
 pub struct RendererConfig {
     pub width: u32,
@@ -92,6 +95,7 @@ struct Uniforms {
     camera_pos: Point3<f32>,
     _pad0: f32,
     light_pos: Point3<f32>,
+    camera_far: f32,
 }
 
 impl Default for Uniforms {
@@ -101,6 +105,7 @@ impl Default for Uniforms {
             camera_pos: [0.0; 3].into(),
             _pad0: 0.0,
             light_pos: [0.0; 3].into(),
+            camera_far: CLIP_FAR,
         }
     }
 }
@@ -145,7 +150,7 @@ pub struct Instance {
 }
 
 impl Renderer {
-    const COLOR_OUTPUT_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
+    const COLOR_OUTPUT_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8UnormSrgb;
 
     pub fn new(window: &Window, config: RendererConfig) -> Result<Renderer> {
         let surface = wgpu::Surface::create(window);
@@ -297,7 +302,7 @@ impl Renderer {
             format: Self::COLOR_OUTPUT_TEXTURE_FORMAT,
             width,
             height,
-            present_mode: wgpu::PresentMode::NoVsync,
+            present_mode: wgpu::PresentMode::Vsync,
         }
     }
 
@@ -442,6 +447,8 @@ impl Renderer {
         };
 
         self.bind_group = Self::create_bind_group(&self.device, &self.bind_group_layout, bindings);
+
+        self.cleanup();
     }
 
     pub fn cleanup(&mut self) {
@@ -587,8 +594,8 @@ impl<'a> Frame<'a> {
         let perspective = cgmath::Matrix4::from(cgmath::PerspectiveFov {
             fovy: cgmath::Deg(camera.fov).into(),
             aspect,
-            near: 0.1,
-            far: 20.0,
+            near: CLIP_NEAR,
+            far: CLIP_FAR,
         });
 
         let up = [0.0, 0.0, 1.0].into();
@@ -602,6 +609,10 @@ impl<'a> Frame<'a> {
     }
 
     pub fn draw(&mut self, model: Model, instance: Instance) {
+        if instance.position.to_vec().magnitude() > CLIP_FAR {
+            return;
+        }
+
         self.renderer
             .instances
             .entry(model)

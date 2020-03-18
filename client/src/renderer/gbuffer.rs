@@ -44,12 +44,22 @@ impl GBuffer {
     const POSITION_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
     const DEPTH_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
-    const COLOR_CLEAR_COLOR: wgpu::Color = wgpu::Color::BLACK;
+    const COLOR_CLEAR_COLOR: wgpu::Color = wgpu::Color {
+        r: 0.9,
+        g: 0.9,
+        b: 0.9,
+        a: 0.0,
+    };
     const NORMAL_CLEAR_COLOR: wgpu::Color = wgpu::Color {
         a: 1e6,
         ..wgpu::Color::BLACK
     };
-    const POSITION_CLEAR_COLOR: wgpu::Color = wgpu::Color::BLACK;
+    const POSITION_CLEAR_COLOR: wgpu::Color = wgpu::Color {
+        r: 1e6,
+        g: 1e6,
+        b: 1e6,
+        a: 1e6,
+    };
 
     const BIND_GROUP_BINDINGS: &'static [wgpu::BindGroupLayoutBinding] =
         &[wgpu::BindGroupLayoutBinding {

@@ -9,13 +9,13 @@ use winit::event::{MouseButton, VirtualKeyCode};
 use winit::window::Window;
 
 use cgmath::prelude::*;
-use cgmath::{Vector3, Point3};
+use cgmath::{Point3, Vector2, Vector3};
 
 use logic::components::{Model, Position};
 use logic::legion::prelude::*;
 use logic::resources::TimeStep;
 
-use crate::renderer::{Camera, Renderer, Instance};
+use crate::renderer::{Camera, Instance, Renderer};
 
 type System = logic::System;
 
@@ -74,7 +74,7 @@ pub fn player_movement() -> System {
         .build(move |_, world, (dt, controller, window), _| {
             if let Some(target) = controller.target {
                 if let Some(mut position) = world.get_component_mut::<Position>(target) {
-                    let mut movement = Vector3::zero();
+                    let mut movement = Vector2::zero();
 
                     if window.key_down(VirtualKeyCode::Comma) {
                         movement.y += 1.0;
@@ -90,7 +90,15 @@ pub fn player_movement() -> System {
                     }
 
                     if !movement.is_zero() {
-                        **position += 5.0 * dt.secs_f32() * movement.normalize();
+                        let direction = controller.direction();
+                        let forward = Vector3::new(direction.x, direction.y, 0.0).normalize();
+                        dbg!(forward);
+                        let up = Vector3::unit_z();
+                        let right = forward.cross(up);
+
+                        let delta = right * movement.x + forward * movement.y;
+
+                        **position += 5.0 * dt.secs_f32() * delta.normalize();
                     }
                 }
             }
@@ -120,7 +128,7 @@ pub fn update_camera() -> System {
             let direction = controller.direction();
             let distance = controller.distance;
 
-            camera.position = camera.focus + distance * direction;
+            camera.position = camera.focus - distance * direction;
         })
 }
 
@@ -145,7 +153,7 @@ pub fn render() -> logic::System {
                     color: [1.0; 3],
                 };
 
-                 match *model {
+                match *model {
                     Model::Rect => {
                         instance.color = [1.0, 0.0, 0.0];
                     }
@@ -293,6 +301,6 @@ impl CameraController {
         let dy = sin_theta * cos_phi;
         let dz = sin_phi;
 
-        [dx, dy, dz].into()
+        [-dx, -dy, -dz].into()
     }
 }

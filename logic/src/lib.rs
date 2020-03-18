@@ -5,6 +5,8 @@ use legion::schedule::Builder as ScheduleBuilder;
 use legion::schedule::Schedulable;
 use legion::world::World;
 
+use rand::Rng;
+
 pub mod components;
 pub mod resources;
 mod systems;
@@ -19,12 +21,15 @@ pub fn create_world() -> World {
     let mut world = World::new();
     world.resources.insert(TimeStep::default());
 
-    let size = 5;
-    for x in -size..=size {
-        for y in -size..=size {
-            let position = Position([x as f32, y as f32, 0.0].into());
-            world.insert((Tile {},), Some((position, Model::Tree)));
-        }
+    let mut rng = rand::thread_rng();
+
+    let trees = 10_000;
+    let size = 80.0;
+    for _ in 0..trees {
+        let x = rng.gen_range(-size / 2.0, size / 2.0);
+        let y = rng.gen_range(-size / 2.0, size / 2.0);
+        let position = Position([x as f32, y as f32, 0.0].into());
+        world.insert((Tile {},), Some((position, Model::Tree)));
     }
 
     world
@@ -37,7 +42,7 @@ pub fn add_systems(builder: ScheduleBuilder) -> ScheduleBuilder {
 
 pub fn add_player(world: &mut World) -> Entity {
     let position = Position([0.0; 3].into());
-    let model = Model::Rect;
+    let model = Model::Circle;
 
     let tags = (Player,);
 
