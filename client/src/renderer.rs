@@ -7,12 +7,13 @@ use std::fs;
 use std::io::Cursor;
 use std::path::Path;
 use std::sync::Arc;
-use wgpu::VertexFormat::Float3;
+use wgpu::VertexFormat::{Float2, Float3};
 use wgpu_shader::VertexLayout;
 use winit::window::Window;
 
 mod gbuffer;
 mod models;
+mod texture;
 
 use gbuffer::GBuffer;
 use models::ModelRegistry;
@@ -61,6 +62,8 @@ pub struct Renderer {
 
     models: ModelRegistry,
     instances: HashMap<Model, Vec<Instance>>,
+
+    white_texture: wgpu::TextureView,
 }
 
 struct Shaders {
@@ -121,9 +124,9 @@ pub struct Camera {
 #[repr(C)]
 struct Vertex {
     #[vertex(format = Float3, location = 0)]
-    position: Vector3<f32>,
-    #[vertex(format = Float3, location = 1)]
-    color: [f32; 3],
+    position: Point3<f32>,
+    #[vertex(format = Float2, location = 1)]
+    tex_coord: [f32; 2],
     #[vertex(format = Float3, location = 2)]
     normal: Vector3<f32>,
 }
@@ -155,7 +158,7 @@ impl Renderer {
         let adapter = wgpu::Adapter::request(&Default::default())
             .ok_or_else(|| anyhow!("failed to get wgpu Adapter"))?;
 
-        let (device, queue) = adapter.request_device(&Default::default());
+        let (device, mut queue) = adapter.request_device(&Default::default());
         let device = Arc::new(device);
 
         let vertex_path = "src/shaders/fullscreen.vert.spv";
@@ -189,7 +192,8 @@ impl Renderer {
         let gbuffer = GBuffer::new(device.clone(), size);
 
         // Load models
-        let models = ModelRegistry::load()?;
+        let mut encoder = device.create_command_encoder(&Default::default());
+        let models = ModelRegistry::load_all(&device, &mut encoder)?;
 
         // Create a vertex and index buffer
         let vertices = models.vertices();
@@ -210,6 +214,10 @@ impl Renderer {
 
         let sampler = Self::create_sampler(&device);
 
+        let mut white_image = image::RgbaImage::new(1, 1);
+        white_image.put_pixel(0, 0, image::Rgba([255; 4]));
+        let white_texture = texture::from_image(&white_image, &device, &mut encoder);
+
         let bindings = Bindings {
             uniforms: &uniform_buffer,
             sampler: &sampler,
@@ -219,6 +227,8 @@ impl Renderer {
         };
 
         let bind_group = Self::create_bind_group(&device, &bind_group_layout, bindings);
+
+        queue.submit(&[encoder.finish()]);
 
         // Finilize
         let renderer = Renderer {
@@ -249,6 +259,7 @@ impl Renderer {
             instances: HashMap::new(),
 
             uniform_buffer,
+            white_texture,
         };
 
         Ok(renderer)
@@ -315,9 +326,9 @@ impl Renderer {
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Linear,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::FilterMode::Nearest,
             lod_min_clamp: -100.0,
             lod_max_clamp: 100.0,
             compare_function: wgpu::CompareFunction::Always,
@@ -405,7 +416,7 @@ impl Renderer {
     }
 
     pub fn set_size(&mut self, width: u32, height: u32) {
-        self.size = Size { width, height};
+        self.size = Size { width, height };
 
         let swap_chain_desc = Self::swap_chain_desc(width, height);
         self.swap_chain = self
@@ -470,12 +481,38 @@ impl Renderer {
             render_pass.set_index_buffer(&self.index_buffer, 0);
 
             for (&model, instances) in self.instances.iter() {
+                let data = &self.models.get_model(model).unwrap();
+
+                let sampler = Self::create_sampler(&self.device);
+                let texture = data
+                    .texture
+                    .as_ref()
+                    .map(|t| t.as_ref())
+                    .unwrap_or(&self.white_texture);
+
+                let bind_group_desc = wgpu::BindGroupDescriptor {
+                    layout: self.gbuffer.model_bind_group_layout(),
+                    bindings: &[
+                        wgpu::Binding {
+                            binding: 0,
+                            resource: wgpu::BindingResource::Sampler(&sampler),
+                        },
+                        wgpu::Binding {
+                            binding: 1,
+                            resource: wgpu::BindingResource::TextureView(texture),
+                        },
+                    ],
+                };
+
+                let bind_group = self.device.create_bind_group(&bind_group_desc);
+
                 let instance_buffer = self
                     .device
                     .create_buffer_mapped(instances.len(), wgpu::BufferUsage::VERTEX)
                     .fill_from_slice(&instances);
-                let data = &self.models.get_model(model).unwrap();
+
                 render_pass.set_vertex_buffers(1, &[(&instance_buffer, 0)]);
+                render_pass.set_bind_group(1, &bind_group, &[]);
                 render_pass.draw_indexed(data.indices.clone(), 0, 0..instances.len() as u32);
             }
         }

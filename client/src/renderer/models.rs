@@ -1,9 +1,11 @@
 use anyhow::{Context, Result};
+use cgmath::{prelude::*, Point3, Vector2, Vector3};
 use logic::components::Model;
 use std::collections::HashMap;
 use std::f32::consts::PI;
 use std::ops::Range;
 use std::path::Path;
+use std::sync::Arc;
 
 use super::Vertex;
 
@@ -17,6 +19,7 @@ pub(super) struct ModelRegistry {
 
 pub struct ModelData {
     pub(super) indices: Range<u32>,
+    pub(super) texture: Option<Arc<wgpu::TextureView>>,
 }
 
 impl ModelRegistry {
@@ -28,22 +31,36 @@ impl ModelRegistry {
         }
     }
 
-    pub fn load() -> Result<ModelRegistry> {
+    pub fn load_all(
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+    ) -> Result<ModelRegistry> {
         let mut registry = ModelRegistry::new();
 
         for &kind in Model::KINDS {
-            let data = match kind {
-                Model::Rect => registry.push_rect(),
-                Model::Circle => registry.push_circle(32),
-                Model::Tree => registry
-                    .push_image("assets/tree_poplar.png")
-                    .context("failed to build model for image")?,
-            };
-
-            registry.models.insert(kind, data);
+            registry.load(kind, device, encoder)?;
         }
 
         Ok(registry)
+    }
+
+    pub fn load(
+        &mut self,
+        kind: Model,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+    ) -> Result<()> {
+        let data = match kind {
+            Model::Rect => self.push_rect(),
+            Model::Circle => self.push_circle(32),
+            Model::Tree => self
+                .push_image("assets/tree_poplar.png", device, encoder)
+                .context("failed to build model for image")?,
+        };
+
+        self.models.insert(kind, data);
+
+        Ok(())
     }
 
     pub fn vertices(&self) -> &[Vertex] {
@@ -58,7 +75,7 @@ impl ModelRegistry {
         self.models.get(&model)
     }
 
-    fn add_vertices(&mut self, vertices: &[Vertex], indices: &[u32]) -> ModelData {
+    fn add_vertices(&mut self, vertices: &[Vertex], indices: &[u32]) -> Range<u32> {
         let start_vertex = self.vertices.len() as u32;
         self.vertices.extend_from_slice(vertices);
 
@@ -67,15 +84,13 @@ impl ModelRegistry {
             .extend(indices.iter().map(|index| start_vertex + index));
         let end_index = self.indices.len() as u32;
 
-        ModelData {
-            indices: start_index..end_index,
-        }
+        start_index..end_index
     }
 
     fn push_rect(&mut self) -> ModelData {
         let vertex = |x, y| Vertex {
             position: [x, y, 0.0].into(),
-            color: [1.0; 3],
+            tex_coord: [x + 0.5, y + 0.5],
             normal: [0.0, 0.0, 1.0].into(),
         };
 
@@ -87,14 +102,18 @@ impl ModelRegistry {
         ];
 
         let indices = [0, 1, 2, 2, 3, 0];
+        let range = self.add_vertices(&corners, &indices);
 
-        self.add_vertices(&corners, &indices)
+        ModelData {
+            indices: range,
+            texture: None,
+        }
     }
 
     fn push_circle(&mut self, resolution: u32) -> ModelData {
         let vertex = |x, y| Vertex {
             position: [x, y, 0.0].into(),
-            color: [1.0; 3],
+            tex_coord: [x + 0.5, y + 0.5],
             normal: [0.0, 0.0, 1.0].into(),
         };
 
@@ -124,10 +143,20 @@ impl ModelRegistry {
             indices.push((i + 2) % resolution);
         }
 
-        self.add_vertices(&vertices, &indices)
+        let range = self.add_vertices(&vertices, &indices);
+
+        ModelData {
+            indices: range,
+            texture: None,
+        }
     }
 
-    fn push_image(&mut self, path: impl AsRef<Path>) -> Result<ModelData> {
+    fn push_image(
+        &mut self,
+        path: impl AsRef<Path>,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+    ) -> Result<ModelData> {
         let image = image::open(&path)
             .with_context(|| format!("failed to open image '{}'", path.as_ref().display()))?
             .into_rgba();
@@ -135,154 +164,162 @@ impl ModelRegistry {
         let (width, height) = image.dimensions();
 
         let real_width = width as f32 * VOXEL_SIZE;
+        let real_height = height as f32 * VOXEL_SIZE;
         let real_depth = VOXEL_SIZE;
+
+        let offset_y = real_depth / 2.0;
+        let offset_z = real_height / 2.0;
 
         let mut vertices = Vec::new();
         let mut indices = Vec::new();
 
-        for (col, row, color) in image.enumerate_pixels() {
-            let [red, green, blue, alpha] = color.0;
+        let front_quad = Quad {
+            size: [real_width, real_height].into(),
+            normal: [0.0, -1.0, 0.0].into(),
+            center: [0.0, -offset_y, offset_z].into(),
+            tex_start: [0.0, 0.0],
+            tex_end: [1.0, 1.0],
+        };
 
-            let normalize = |byte| byte as f32 / 255.0;
-            let color = [normalize(red), normalize(green), normalize(blue)];
+        let back_quad = Quad {
+            normal: [0.0, 1.0, 0.0].into(),
+            center: [0.0, offset_y, offset_z].into(),
+            ..front_quad
+        };
 
-            let x = col as f32 * VOXEL_SIZE;
-            let z = (height - row - 1) as f32 * VOXEL_SIZE;
+        let is_transparent = |col: i32, row: i32| {
+            if col < 0 || col >= width as i32 || row < 0 || row >= height as i32 {
+                true
+            } else {
+                let [_, _, _, alpha] = image.get_pixel(col as u32, row as u32).0;
+                alpha != 255
+            }
+        };
 
-            if alpha != 0 {
-                let voxel = Voxel::new(
-                    [x - real_width / 2.0, -real_depth / 2.0, z],
-                    color,
-                    VOXEL_SIZE,
-                );
+        let mut add_face = |quad: Quad| {
+            let face = QuadFace::from(quad);
 
-                let mut add_face = |face: &VoxelFace| {
-                    let start_vertex = vertices.len() as u32;
-                    vertices.extend_from_slice(&face.vertices);
+            let start_vertex = vertices.len() as u32;
+            vertices.extend_from_slice(&face.vertices);
 
-                    let offset_indices = VoxelFace::INDICES.iter().map(|i| *i + start_vertex);
-                    indices.extend(offset_indices);
-                };
+            let offset_indices = QuadFace::INDICES.iter().map(|i| *i + start_vertex);
+            indices.extend(offset_indices);
+        };
 
-                add_face(&voxel.faces.front);
-                add_face(&voxel.faces.back);
+        add_face(front_quad);
+        add_face(back_quad);
 
-                let is_transparent = |col: i32, row: i32| {
-                    if col < 0 || col >= width as i32 || row < 0 || row >= height as i32 {
-                        true
-                    } else {
-                        let [_, _, _, alpha] = image.get_pixel(col as u32, row as u32).0;
-                        alpha != 255
+        for col in 0..width {
+            for row in 0..height {
+                if !is_transparent(col as i32, row as i32) {
+                    let quad = |normal: [f32; 3]| {
+                        let normal = Vector3::from(normal);
+
+                        let x = col as f32 - width as f32 / 2.0;
+                        let z = (height - row - 1) as f32;
+
+                        let center =
+                            Point3::new(x + 0.5, 0.0, z + 0.5) * VOXEL_SIZE + 0.5 * VOXEL_SIZE * normal;
+
+                        let u = (col as f32 + 0.1) / width as f32;
+                        let v = (row as f32 + 0.1) / height as f32;
+
+                        Quad {
+                            normal,
+                            size: [VOXEL_SIZE; 2].into(),
+                            center,
+                            tex_start: [u, v],
+                            tex_end: [u, v],
+                        }
+                    };
+
+                    let deltas = [[-1, 0], [1, 0], [0, -1], [0, 1]];
+
+                    for &[dx, dy] in &deltas {
+                        if is_transparent(col as i32 + dx, row as i32 + dy) {
+                            add_face(quad([dx as f32, 0.0, -dy as f32]));
+                        }
                     }
-                };
-
-                let (col, row) = (col as i32, row as i32);
-
-                if is_transparent(col, row - 1) {
-                    add_face(&voxel.faces.top);
-                }
-                if is_transparent(col, row + 1) {
-                    add_face(&voxel.faces.bottom);
-                }
-                if is_transparent(col - 1, row) {
-                    add_face(&voxel.faces.left);
-                }
-                if is_transparent(col + 1, row) {
-                    add_face(&voxel.faces.right);
                 }
             }
         }
 
         let n = indices.len();
-        eprintln!("{} indices ({} triangles or {} faces)", n, n / 3, n / 6);
+        eprintln!(
+            "{} vertices, {} indices ({} triangles or {} faces)",
+            vertices.len(),
+            n,
+            n / 3,
+            n / 6
+        );
 
-        Ok(self.add_vertices(&vertices, &indices))
+        let range = self.add_vertices(&vertices, &indices);
+        let texture = super::texture::from_image(&image, device, encoder);
+
+        Ok(ModelData {
+            indices: range,
+            texture: Some(Arc::new(texture)),
+        })
     }
+
 }
 
-struct Voxel {
-    faces: Faces<VoxelFace>,
-}
-
-struct VoxelFace {
+struct QuadFace {
     vertices: [Vertex; 4],
 }
 
-struct Faces<T> {
-    front: T,
-    back: T,
-    top: T,
-    bottom: T,
-    left: T,
-    right: T,
+#[derive(Copy, Clone)]
+struct Quad {
+    size: Vector2<f32>,
+    normal: Vector3<f32>,
+    center: Point3<f32>,
+    tex_start: [f32; 2],
+    tex_end: [f32; 2],
 }
 
-impl Voxel {
-    pub fn new([x, y, z]: [f32; 3], color: [f32; 3], size: f32) -> Voxel {
-        let vertex = |position: [f32; 3], normal: [f32; 3]| Vertex {
-            position: position.into(),
-            color,
-            normal: normal.into(),
+impl From<Quad> for QuadFace {
+    fn from(quad: Quad) -> QuadFace {
+        let right = match Vector3::unit_z().cross(quad.normal) {
+            product if product.is_zero() => Vector3::unit_y().cross(quad.normal),
+            product => product,
         };
+        let up = quad.normal.cross(right);
 
-        let (x0, y0, z0) = (x, y, z);
-        let (x1, y1, z1) = (x + size, y + size, z + size);
+        let right = right * quad.size.x;
+        let up = up * quad.size.y;
 
-        let faces = Faces {
-            front: VoxelFace {
-                vertices: [
-                    vertex([x0, y0, z0], [0.0, -1.0, 0.0]),
-                    vertex([x1, y0, z0], [0.0, -1.0, 0.0]),
-                    vertex([x1, y0, z1], [0.0, -1.0, 0.0]),
-                    vertex([x0, y0, z1], [0.0, -1.0, 0.0]),
-                ],
-            },
-            back: VoxelFace {
-                vertices: [
-                    vertex([x1, y1, z0], [0.0, 1.0, 0.0]),
-                    vertex([x0, y1, z0], [0.0, 1.0, 0.0]),
-                    vertex([x0, y1, z1], [0.0, 1.0, 0.0]),
-                    vertex([x1, y1, z1], [0.0, 1.0, 0.0]),
-                ],
-            },
-            top: VoxelFace {
-                vertices: [
-                    vertex([x0, y0, z1], [0.0, 0.0, 1.0]),
-                    vertex([x1, y0, z1], [0.0, 0.0, 1.0]),
-                    vertex([x1, y1, z1], [0.0, 0.0, 1.0]),
-                    vertex([x0, y1, z1], [0.0, 0.0, 1.0]),
-                ],
-            },
-            bottom: VoxelFace {
-                vertices: [
-                    vertex([x1, y0, z0], [0.0, 0.0, 1.0]),
-                    vertex([x0, y0, z0], [0.0, 0.0, 1.0]),
-                    vertex([x0, y1, z0], [0.0, 0.0, 1.0]),
-                    vertex([x1, y1, z0], [0.0, 0.0, 1.0]),
-                ],
-            },
-            left: VoxelFace {
-                vertices: [
-                    vertex([x0, y1, z0], [-1.0, 0.0, 0.0]),
-                    vertex([x0, y0, z0], [-1.0, 0.0, 0.0]),
-                    vertex([x0, y0, z1], [-1.0, 0.0, 0.0]),
-                    vertex([x0, y1, z1], [-1.0, 0.0, 0.0]),
-                ],
-            },
-            right: VoxelFace {
-                vertices: [
-                    vertex([x1, y0, z0], [1.0, 0.0, 0.0]),
-                    vertex([x1, y1, z0], [1.0, 0.0, 0.0]),
-                    vertex([x1, y1, z1], [1.0, 0.0, 0.0]),
-                    vertex([x1, y0, z1], [1.0, 0.0, 0.0]),
-                ],
-            },
-        };
+        let bottom_left: Point3<f32> = quad.center - 0.5 * right - 0.5 * up;
 
-        Voxel { faces }
+        let [u0, v0] = quad.tex_start;
+        let [u1, v1] = quad.tex_end;
+
+        QuadFace {
+            vertices: [
+                Vertex {
+                    position: bottom_left,
+                    normal: quad.normal,
+                    tex_coord: [u0, v1],
+                },
+                Vertex {
+                    position: bottom_left + right,
+                    normal: quad.normal,
+                    tex_coord: [u1, v1],
+                },
+                Vertex {
+                    position: bottom_left + right + up,
+                    normal: quad.normal,
+                    tex_coord: [u1, v0],
+                },
+                Vertex {
+                    position: bottom_left + up,
+                    normal: quad.normal,
+                    tex_coord: [u0, v0],
+                },
+            ],
+        }
     }
 }
 
-impl VoxelFace {
+impl QuadFace {
     const INDICES: [u32; 6] = [0, 1, 2, 2, 3, 0];
 }

@@ -4,13 +4,14 @@ out gl_PerVertex {
     vec4 gl_Position;
 };
 
-layout(location = 0) out vec4 f_color;
+layout(location = 0) out vec2 f_tex_coord;
 layout(location = 1) out vec3 f_position;
 layout(location = 2) out vec3 f_normal;
 layout(location = 3) out float f_depth;
+layout(location = 4) out vec3 f_color;
 
 layout(location = 0) in vec3 v_position;
-layout(location = 1) in vec3 v_color;
+layout(location = 1) in vec2 v_tex_coord;
 layout(location = 2) in vec3 v_normal;
 
 layout(location = 3) in vec3 i_position;
@@ -23,8 +24,10 @@ layout(binding = 0) uniform Locals {
 
 void main() {
     f_position = vec3(i_scale * v_position + i_position);
-    f_color = vec4(i_color * v_color, 1.0);
+    f_tex_coord = v_tex_coord;
     f_normal = v_normal;
+
+    f_color = i_color;
 
     vec4 screen = u_transform * vec4(f_position, 1.0);
     f_depth = screen.z / screen.w;

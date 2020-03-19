@@ -16,8 +16,10 @@ pub struct GBuffer {
 
     pipeline: wgpu::RenderPipeline,
 
-    bind_group: wgpu::BindGroup,
     uniform_buffer: wgpu::Buffer,
+
+    bind_group: wgpu::BindGroup,
+    model_layout: wgpu::BindGroupLayout,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -65,8 +67,24 @@ impl GBuffer {
         &[wgpu::BindGroupLayoutBinding {
             binding: 0,
             visibility: wgpu::ShaderStage::VERTEX,
-            ty: wgpu::BindingType::UniformBuffer { dynamic: true },
+            ty: wgpu::BindingType::UniformBuffer { dynamic: false },
         }];
+
+    const MODEL_GROUP_BINDINGS: &'static [wgpu::BindGroupLayoutBinding] = &[
+        wgpu::BindGroupLayoutBinding {
+            binding: 0,
+            visibility: wgpu::ShaderStage::FRAGMENT,
+            ty: wgpu::BindingType::Sampler,
+        },
+        wgpu::BindGroupLayoutBinding {
+            binding: 1,
+            visibility: wgpu::ShaderStage::FRAGMENT,
+            ty: wgpu::BindingType::SampledTexture {
+                multisampled: false,
+                dimension: wgpu::TextureViewDimension::D2,
+            },
+        },
+    ];
 
     const COLOR_STATES: &'static [wgpu::ColorStateDescriptor] = &[
         // Color
@@ -123,15 +141,16 @@ impl GBuffer {
 
         let depth = Self::create_buffer_texture(&device, size, Self::DEPTH_TEXTURE_FORMAT);
 
-        let bind_group_layout = Self::create_bind_group_layout(&device);
-        let pipeline = Self::create_render_pipeline(&device, &bind_group_layout);
+        let [main_layout, model_layout] = Self::create_bind_group_layouts(&device);
+        let pipeline = Self::create_render_pipeline(&device, &[&main_layout, &model_layout]);
 
         let uniform_buffer = Self::create_uniform_buffer(&device, Uniforms::default());
 
         let bindings = Bindings {
             uniforms: &uniform_buffer,
         };
-        let bind_group = Self::create_bind_group(&device, &bind_group_layout, bindings);
+
+        let bind_group = Self::create_bind_group(&device, &main_layout, bindings);
 
         GBuffer {
             device,
@@ -144,8 +163,10 @@ impl GBuffer {
 
             pipeline,
 
-            bind_group,
             uniform_buffer,
+
+            bind_group,
+            model_layout,
         }
     }
 
@@ -173,9 +194,10 @@ impl GBuffer {
 
     fn create_render_pipeline(
         device: &wgpu::Device,
-        bind_group_layout: &wgpu::BindGroupLayout,
+        bind_group_layouts: &[&wgpu::BindGroupLayout],
     ) -> wgpu::RenderPipeline {
-        let layout = Self::create_pipeline_layout(device, bind_group_layout);
+        let descriptor = wgpu::PipelineLayoutDescriptor { bind_group_layouts };
+        let layout = device.create_pipeline_layout(&descriptor);
 
         let vertex_path = "src/shaders/gbuffer.vert.spv";
         let fragment_path = "src/shaders/gbuffer.frag.spv";
@@ -187,7 +209,7 @@ impl GBuffer {
             fragment_stage: Some(shaders.fragment_stage()),
             rasterization_state: Some(wgpu::RasterizationStateDescriptor {
                 front_face: wgpu::FrontFace::Ccw,
-                cull_mode: wgpu::CullMode::Back,
+                cull_mode: wgpu::CullMode::None,
                 ..Default::default()
             }),
             primitive_topology: wgpu::PrimitiveTopology::TriangleList,
@@ -203,22 +225,19 @@ impl GBuffer {
         device.create_render_pipeline(&descriptor)
     }
 
-    fn create_pipeline_layout(
-        device: &wgpu::Device,
-        bind_group_layout: &wgpu::BindGroupLayout,
-    ) -> wgpu::PipelineLayout {
-        let descriptor = wgpu::PipelineLayoutDescriptor {
-            bind_group_layouts: &[bind_group_layout],
-        };
-
-        device.create_pipeline_layout(&descriptor)
-    }
-
-    fn create_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
-        let descriptor = wgpu::BindGroupLayoutDescriptor {
+    fn create_bind_group_layouts(device: &wgpu::Device) -> [wgpu::BindGroupLayout; 2] {
+        let main_desc = wgpu::BindGroupLayoutDescriptor {
             bindings: Self::BIND_GROUP_BINDINGS,
         };
-        device.create_bind_group_layout(&descriptor)
+
+        let model_desc = wgpu::BindGroupLayoutDescriptor {
+            bindings: Self::MODEL_GROUP_BINDINGS,
+        };
+
+        let main = device.create_bind_group_layout(&main_desc);
+        let model = device.create_bind_group_layout(&model_desc);
+
+        [main, model]
     }
 
     fn create_bind_group(
@@ -246,6 +265,10 @@ impl GBuffer {
             .fill_from_slice(&[uniforms])
     }
 
+    pub fn model_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
+        &self.model_layout
+    }
+
     pub fn begin_render_pass<'a>(
         &self,
         encoder: &'a mut wgpu::CommandEncoder,
@@ -267,7 +290,7 @@ impl GBuffer {
         let mut render_pass = encoder.begin_render_pass(&descriptor);
 
         render_pass.set_pipeline(&self.pipeline);
-        render_pass.set_bind_group(0, &self.bind_group, &[0]);
+        render_pass.set_bind_group(0, &self.bind_group, &[]);
 
         render_pass
     }

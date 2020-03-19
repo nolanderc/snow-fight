@@ -92,7 +92,7 @@ float phong() {
     vec3 reflection = reflect(light_dir, f_normal);
     float specular = max(0, dot(reflection, -f_camera_dir));
 
-    return brightness + pow(specular, 4);
+    return brightness + 0.4 * pow(specular, 4);
 }
 
 void main() {
@@ -104,7 +104,7 @@ void main() {
     vec4 fog_color = vec4(0.4, 0.7, 0.9, 0.0);
     vec4 outline_color = vec4(0.0);
 
-    vec4 diffuse = f_depth > 2 ? fog_color : brightness * f_color;
+    vec4 diffuse = f_distance > u_camera_far ? fog_color : brightness * f_color;
     vec4 base_color = mix(diffuse, outline_color, outline);
 
     float fog_factor = fog_depth / u_camera_far;
