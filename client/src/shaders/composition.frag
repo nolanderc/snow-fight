@@ -30,7 +30,7 @@ float f_distance;
 
 vec3 f_camera_dir;
 
-float fog_depth = 1e6;
+float close_depth = 1e6;
 
 /// Initialize global variables
 void init() {
@@ -58,7 +58,7 @@ vec4 edge() {
 
             vec3 position = texture(sampler2D(g_position, g_sampler), tex).xyz;
             float dist = distance(position, u_camera_pos);
-            fog_depth = min(fog_depth, dist);
+            close_depth = min(close_depth, dist);
 
             vec3 normal = texture(sampler2D(g_normal, g_sampler), tex).xyz;
             float depth = f_depth > 2 ? f_depth : dist;
@@ -104,9 +104,10 @@ void main() {
     vec4 fog_color = vec4(0.4, 0.7, 0.9, 0.0);
     vec4 outline_color = vec4(0.0);
 
-    vec4 diffuse = f_distance > u_camera_far ? fog_color : brightness * f_color;
-    vec4 base_color = mix(diffuse, outline_color, outline);
+    float distance_factor = close_depth / u_camera_far;
 
-    float fog_factor = fog_depth / u_camera_far;
-    out_color = mix(base_color, fog_color, clamp(pow(fog_factor, 2), 0.0, 1.0));
+    vec4 diffuse = f_distance > u_camera_far ? fog_color : brightness * f_color;
+    vec4 base_color = mix(diffuse, outline_color, (1.0 - 0.8 * pow(distance_factor, 0.5)) * outline);
+
+    out_color = mix(base_color, fog_color, clamp(pow(distance_factor, 2), 0.0, 1.0));
 }

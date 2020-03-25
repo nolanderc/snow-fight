@@ -1,6 +1,6 @@
 use anyhow::Result;
 use cgmath::prelude::*;
-use cgmath::{Matrix4, Point3, Vector3};
+use cgmath::{Matrix4, Point2, Point3, Vector3, Vector4};
 use logic::components::Model;
 use std::collections::HashMap;
 use std::fs;
@@ -26,9 +26,6 @@ pub const OPENGL_TO_WGPU_MATRIX: Matrix4<f32> = Matrix4::new(
     0.0,  0.0,  0.5,  0.0,
     0.0,  0.0,  0.5,  1.0,
 );
-
-const CLIP_NEAR: f32 = 0.1;
-const CLIP_FAR: f32 = 40.0;
 
 #[derive(Debug, Copy, Clone)]
 pub struct RendererConfig {
@@ -76,9 +73,9 @@ pub struct Frame<'a> {
 }
 
 #[derive(Copy, Clone)]
-struct Size {
-    width: u32,
-    height: u32,
+pub struct Size {
+    pub width: u32,
+    pub height: u32,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -98,7 +95,7 @@ impl Default for Uniforms {
             camera_pos: [0.0; 3].into(),
             _pad0: 0.0,
             light_pos: [0.0; 3].into(),
-            camera_far: CLIP_FAR,
+            camera_far: Camera::CLIP_FAR,
         }
     }
 }
@@ -147,8 +144,6 @@ impl Renderer {
 
     pub fn new(window: &Window, config: RendererConfig) -> Result<Renderer> {
         let surface = wgpu::Surface::create(window);
-
-        dbg!(std::mem::size_of::<Uniforms>());
 
         let size = Size {
             width: config.width,
@@ -301,7 +296,7 @@ impl Renderer {
             format: Self::COLOR_OUTPUT_TEXTURE_FORMAT,
             width,
             height,
-            present_mode: wgpu::PresentMode::NoVsync,
+            present_mode: wgpu::PresentMode::Vsync,
         }
     }
 
@@ -446,8 +441,12 @@ impl Renderer {
         self.cleanup();
     }
 
+    pub fn size(&self) -> Size {
+        self.size
+    }
+
     pub fn cleanup(&mut self) {
-        self.device.poll(false);
+        self.device.poll(true);
     }
 
     pub fn next_frame(&mut self) -> Frame {
@@ -613,20 +612,7 @@ impl Shaders {
 impl<'a> Frame<'a> {
     pub fn set_camera(&mut self, camera: Camera) {
         let size = self.renderer.size;
-        let aspect = size.width as f32 / size.height as f32;
-        let perspective = cgmath::Matrix4::from(cgmath::PerspectiveFov {
-            fovy: cgmath::Deg(camera.fov).into(),
-            aspect,
-            near: CLIP_NEAR,
-            far: CLIP_FAR,
-        });
-
-        let up = [0.0, 0.0, 1.0].into();
-        let view = cgmath::Matrix4::look_at(camera.position, camera.focus, up);
-
-        let transform = OPENGL_TO_WGPU_MATRIX * perspective * view;
-
-        self.renderer.uniforms.transform = transform;
+        self.renderer.uniforms.transform = camera.transform(size);
         self.renderer.uniforms.camera_pos = camera.position;
         self.renderer.uniforms.light_pos = camera.focus;
     }
@@ -647,5 +633,54 @@ impl<'a> Frame<'a> {
 impl Drop for Frame<'_> {
     fn drop(&mut self) {
         self.renderer.render();
+    }
+}
+
+impl Camera {
+    const CLIP_NEAR: f32 = 0.1;
+    const CLIP_FAR: f32 = 40.0;
+
+    pub fn perspective(self, size: Size) -> Matrix4<f32> {
+        let aspect = size.width as f32 / size.height as f32;
+        let perspective = Matrix4::from(cgmath::PerspectiveFov {
+            fovy: cgmath::Deg(self.fov).into(),
+            aspect,
+            near: Self::CLIP_NEAR,
+            far: Self::CLIP_FAR,
+        });
+
+        OPENGL_TO_WGPU_MATRIX * perspective
+    }
+
+    pub fn view(self) -> Matrix4<f32> {
+        Matrix4::look_at(self.position, self.focus, [0.0, 0.0, 1.0].into())
+    }
+
+    pub fn transform(self, size: Size) -> Matrix4<f32> {
+        self.perspective(size) * self.view()
+    }
+
+    pub fn cast_ray(self, size: Size, screen: Point2<f32>) -> Vector3<f32> {
+        let perspective = self
+            .perspective(size)
+            .invert()
+            .unwrap_or_else(Matrix4::identity);
+        let view = self.view().invert().unwrap_or_else(Matrix4::identity);
+
+        let clip = Vector4 {
+            x: screen.x,
+            y: screen.y,
+            z: 1.0,
+            w: 1.0,
+        };
+
+        let mut eye = perspective * clip;
+        eye.z = 1.0;
+        eye.w = 0.0;
+
+        let world = view * eye;
+
+        let delta = world.xyz();
+        delta.normalize()
     }
 }

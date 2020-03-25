@@ -12,8 +12,16 @@ pub enum Model {
     Rect,
     Circle,
     Tree,
+    Player,
+    Mushroom,
 }
 
 impl Model {
-    pub const KINDS: &'static [Model] = &[Model::Rect, Model::Circle, Model::Tree];
+    pub const KINDS: &'static [Model] = &[
+        Model::Rect,
+        Model::Circle,
+        Model::Tree,
+        Model::Player,
+        Model::Mushroom,
+    ];
 }

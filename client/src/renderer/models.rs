@@ -56,6 +56,12 @@ impl ModelRegistry {
             Model::Tree => self
                 .push_image("assets/tree_poplar.png", device, encoder)
                 .context("failed to build model for image")?,
+            Model::Player => self
+                .push_image("assets/player.png", device, encoder)
+                .context("failed to build model for image")?,
+            Model::Mushroom => self
+                .push_image("assets/mushroom.png", device, encoder)
+                .context("failed to build model for image")?,
         };
 
         self.models.insert(kind, data);
@@ -182,9 +188,11 @@ impl ModelRegistry {
         };
 
         let back_quad = Quad {
+            size: front_quad.size,
             normal: [0.0, 1.0, 0.0].into(),
             center: [0.0, offset_y, offset_z].into(),
-            ..front_quad
+            tex_start: [1.0, 0.0],
+            tex_end: [0.0, 1.0],
         };
 
         let is_transparent = |col: i32, row: i32| {

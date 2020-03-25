@@ -1,3 +1,5 @@
+pub mod movement;
+
 use legion::system::SystemBuilder;
 use std::time::Instant;
 

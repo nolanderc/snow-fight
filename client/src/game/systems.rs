@@ -8,8 +8,7 @@ use winit::dpi::PhysicalSize;
 use winit::event::{MouseButton, VirtualKeyCode};
 use winit::window::Window;
 
-use cgmath::prelude::*;
-use cgmath::{Vector2, Vector3};
+use cgmath::{Point2, Point3, Vector3};
 
 use logic::components::{Model, Position};
 use logic::legion::prelude::*;
@@ -24,6 +23,11 @@ pub struct WindowState {
     pub size: PhysicalSize<u32>,
     pressed_keys: Vec<VirtualKeyCode>,
     mouse_buttons: Vec<MouseButton>,
+}
+
+#[derive(Debug)]
+pub struct Mouse {
+    pub position: Point2<f32>,
 }
 
 struct FpsMeter {
@@ -65,45 +69,6 @@ pub fn fps_display() -> System {
         })
 }
 
-pub fn player_movement() -> System {
-    SystemBuilder::new("player_movement")
-        .write_component::<Position>()
-        .read_resource::<TimeStep>()
-        .read_resource::<CameraController>()
-        .read_resource::<WindowState>()
-        .build(move |_, world, (dt, controller, window), _| {
-            if let Some(target) = controller.target {
-                if let Some(mut position) = world.get_component_mut::<Position>(target) {
-                    let mut movement = Vector2::zero();
-
-                    if window.key_down(VirtualKeyCode::Comma) {
-                        movement.y += 1.0;
-                    }
-                    if window.key_down(VirtualKeyCode::A) {
-                        movement.x -= 1.0;
-                    }
-                    if window.key_down(VirtualKeyCode::O) {
-                        movement.y -= 1.0;
-                    }
-                    if window.key_down(VirtualKeyCode::E) {
-                        movement.x += 1.0;
-                    }
-
-                    if !movement.is_zero() {
-                        let direction = controller.direction();
-                        let forward = Vector3::new(direction.x, direction.y, 0.0).normalize();
-                        let up = Vector3::unit_z();
-                        let right = forward.cross(up);
-
-                        let delta = right * movement.x + forward * movement.y;
-
-                        **position += 5.0 * dt.secs_f32() * delta.normalize();
-                    }
-                }
-            }
-        })
-}
-
 pub fn update_camera() -> System {
     SystemBuilder::new("update_camera")
         .read_resource::<TimeStep>()
@@ -117,15 +82,18 @@ pub fn update_camera() -> System {
                 .target
                 .and_then(|entity| world.get_component::<Position>(entity));
 
+            let direction = controller.direction();
+            let distance = controller.distance;
+
             if let Some(focus) = focus {
-                let focus = **focus + Vector3::new(0.0, 0.0, 0.5);
+                let forward = Vector3::new(direction.x, direction.y, 0.0);
+                let offset = Vector3::new(0.0, 0.0, 0.5) - 0.5 * distance * forward;
+
+                let focus = **focus + offset;
                 let delta = focus - camera.focus;
                 let restore = 1.0 - 0.5f32.powf(dt.secs_f32() / 0.05);
                 camera.focus += restore * delta;
             }
-
-            let direction = controller.direction();
-            let distance = controller.distance;
 
             camera.position = camera.focus - distance * direction;
         })
@@ -137,10 +105,12 @@ pub fn render() -> logic::System {
     SystemBuilder::new("renderer")
         .write_resource::<Renderer>()
         .read_resource::<Camera>()
+        .read_resource::<Mouse>()
         .with_query(query)
         .build(move |_, world, resources, query| {
-            let (renderer, camera) = resources;
+            let (renderer, camera, mouse) = resources;
 
+            let size = renderer.size();
             let mut frame = renderer.next_frame();
 
             frame.set_camera(**camera);
@@ -178,6 +148,34 @@ pub fn render() -> logic::System {
 
                 frame.draw(*model, instance);
             }
+
+            let mut screen = 2.0 * mouse.position;
+            screen.x /= size.width as f32;
+            screen.x -= 1.0;
+            screen.y /= size.height as f32;
+            screen.y -= 1.0;
+
+            screen *= -1.0;
+
+            let cursor_dir = camera.cast_ray(size, screen);
+            let dt = -camera.position.z / cursor_dir.z;
+            let pointer = camera.position + dt * cursor_dir;
+
+            let tile = Point3 {
+                x: pointer.x.round(),
+                y: pointer.y.round(),
+                z: 0.0,
+            };
+
+            frame.draw(
+                Model::Circle,
+                Instance {
+                    position: tile + Vector3::new(0.0, 0.0, 0.01),
+                    scale: [1.0; 3].into(),
+                    color: [0.9, 0.9, 0.1],
+                },
+            );
+
 
             frame.submit();
             renderer.cleanup();
@@ -246,14 +244,11 @@ impl WindowState {
 }
 
 impl CameraController {
-    const PHI_LOW: f32 = 0.3;
-    const PHI_HIGH: f32 = 1.5;
-
-    const DISTANCE_CLOSE: f32 = 0.5;
+    const DISTANCE_CLOSE: f32 = 3.0;
     const DISTANCE_FAR: f32 = 8.0;
 
     /// After how many senconds half of the exceeded distance should have restored.
-    const ROTATION_HALF_TIME: f32 = 0.05;
+    const ROTATION_HALF_TIME: f32 = 0.1;
     const DISTANCE_HALF_TIME: f32 = 0.05;
 
     pub fn new() -> Self {
@@ -261,21 +256,17 @@ impl CameraController {
             target: None,
 
             theta: (-90f32).to_radians(),
-            phi: Self::PHI_LOW,
+            phi: 0.05,
             distance: Self::DISTANCE_CLOSE,
 
             theta_target: (-90f32).to_radians(),
-            phi_target: 60f32.to_radians(),
+            phi_target: 35f32.to_radians(),
             distance_target: (Self::DISTANCE_CLOSE + Self::DISTANCE_FAR) / 2.0,
         }
     }
 
-    pub fn rotation_impulse(&mut self, dx: f32, dy: f32) {
+    pub fn rotation_impulse(&mut self, dx: f32) {
         self.theta_target += dx;
-        self.phi_target = (self.phi_target + dy)
-            .max(Self::PHI_LOW)
-            .min(Self::PHI_HIGH);
-
         if self.theta_target > TAU {
             self.theta_target -= TAU;
             self.theta -= TAU;
@@ -312,5 +303,13 @@ impl CameraController {
         let dz = sin_phi;
 
         [-dx, -dy, -dz].into()
+    }
+}
+
+impl Default for Mouse {
+    fn default() -> Self {
+        Mouse {
+            position: [0.0, 0.0].into(),
+        }
     }
 }

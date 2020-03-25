@@ -6,33 +6,26 @@
 #[macro_use]
 extern crate anyhow;
 
-const TITLE: &str = "Overengineering";
-
+mod game;
 mod message;
 mod oneshot;
 mod options;
 mod renderer;
-mod systems;
 
+use game::{Event, Game};
 use message::Connection;
 use options::Options;
-use renderer::{Renderer, RendererConfig};
-use systems::{CameraController, WindowState};
 
 use anyhow::{Context, Result};
-use cgmath::prelude::*;
-use logic::components::Position;
-use logic::legion::prelude::*;
 use protocol::Init;
-use std::sync::{mpsc, Arc};
+use std::sync::mpsc;
 use std::thread;
 use structopt::StructOpt;
 
 use winit::{
-    dpi::PhysicalSize,
     event::{
-        DeviceEvent, ElementState, Event as WinitEvent, KeyboardInput, MouseButton,
-        MouseScrollDelta, ScanCode, VirtualKeyCode, WindowEvent,
+        DeviceEvent, ElementState, Event as WinitEvent, KeyboardInput, MouseScrollDelta,
+        WindowEvent,
     },
     event_loop::{ControlFlow, EventLoop},
     window::Window,
@@ -90,38 +83,6 @@ fn connect(options: &Options) -> Result<Connection> {
     println!("Received: {:?}", init.wait()?);
 
     Ok(connection)
-}
-
-#[derive(Debug, Copy, Clone)]
-enum Event {
-    Redraw,
-    Resized(PhysicalSize<u32>),
-    KeyDown {
-        key: VirtualKeyCode,
-        scancode: ScanCode,
-    },
-    KeyUp {
-        key: VirtualKeyCode,
-        scancode: ScanCode,
-    },
-    CursorMoved {
-        x: f32,
-        y: f32,
-    },
-    MouseMotion {
-        delta_x: f32,
-        delta_y: f32,
-    },
-    MouseDown {
-        button: MouseButton,
-    },
-    MouseUp {
-        button: MouseButton,
-    },
-    MouseScroll {
-        delta_x: f32,
-        delta_y: f32,
-    },
 }
 
 fn dispatch_winit_event(
@@ -194,163 +155,22 @@ fn dispatch_winit_event(
 }
 
 fn run(window: Window, events: mpsc::Receiver<Event>) -> Result<()> {
-    let window = Arc::new(window);
+    let mut game = Game::new(window)?;
 
-    let size = window.inner_size();
-
-    let renderer = Renderer::new(
-        &window,
-        RendererConfig {
-            width: size.width,
-            height: size.height,
-            samples: 1,
-        },
-    )?;
-
-    let mut world = logic::create_world();
-    systems::init_world(&mut world);
-    world.resources.insert(renderer);
-    world.resources.insert(WindowState::new(window));
-
-    let player = logic::add_player(&mut world);
-    world
-        .resources
-        .get_mut::<CameraController>()
-        .unwrap()
-        .target = Some(player);
-
-    let schedule = logic::add_systems(Default::default())
-        .add_system(systems::fps_display())
-        .add_system(systems::player_movement())
-        .add_system(systems::update_camera())
-        .flush()
-        .add_system(systems::render());
-
-    let mut schedule = schedule.build();
-
-    loop {
+    while game.is_running() {
         while match events.try_recv() {
             Err(mpsc::TryRecvError::Empty) => false,
             Err(mpsc::TryRecvError::Disconnected) => {
                 return Err(anyhow!("event loop disconnected"))
             }
-            Ok(event) => match handle_event(event, &mut world) {
-                ShouldExit::Exit => return Ok(()),
-                ShouldExit::Continue => true,
-            },
+            Ok(event) => {
+                game.handle_event(event);
+                true
+            }
         } {}
 
-        schedule.execute(&mut world);
-    }
-}
-
-enum ShouldExit {
-    Exit,
-    Continue,
-}
-
-fn handle_event(event: Event, world: &mut World) -> ShouldExit {
-    match event {
-        Event::Resized(size) => {
-            let mut window = world.resources.get_mut::<WindowState>().unwrap();
-            window.size = size;
-
-            let mut renderer = world.resources.get_mut::<Renderer>().unwrap();
-            renderer.set_size(size.width, size.height);
-        }
-        Event::KeyDown { key, .. } => {
-            {
-                let mut window = world.resources.get_mut::<WindowState>().unwrap();
-                window.key_pressed(key);
-            }
-
-            match key {
-                VirtualKeyCode::Tab => switch_closest(world),
-                _ => {}
-            }
-        }
-        Event::KeyUp { key, .. } => {
-            let mut window = world.resources.get_mut::<WindowState>().unwrap();
-            window.key_released(key);
-
-            match key {
-                VirtualKeyCode::Escape => return ShouldExit::Exit,
-                _ => {}
-            }
-        }
-
-        Event::MouseDown { button } => {
-            let mut window = world.resources.get_mut::<WindowState>().unwrap();
-            window.button_pressed(button);
-        }
-        Event::MouseUp { button } => {
-            let mut window = world.resources.get_mut::<WindowState>().unwrap();
-            window.button_released(button);
-        }
-
-        Event::MouseMotion { delta_x, delta_y } => {
-            rotate_camera(world, delta_x, delta_y);
-        }
-
-        Event::MouseScroll { delta_y, .. } => {
-            let window = world.resources.get::<WindowState>().unwrap();
-            if window.key_down(VirtualKeyCode::Space) {
-                let mut controller = world.resources.get_mut::<CameraController>().unwrap();
-                controller.distance_impulse(-0.01 * delta_y)
-            }
-        }
-
-        _ => {}
+        game.tick();
     }
 
-    ShouldExit::Continue
-}
-
-fn rotate_camera(world: &mut World, dx: f32, dy: f32) {
-    let window = world.resources.get::<WindowState>().unwrap();
-    let mut controller = world.resources.get_mut::<CameraController>().unwrap();
-
-    if window.key_down(VirtualKeyCode::Space) {
-        let rx = 4.0 * dx / window.size.width as f32;
-        let ry = 4.0 * dy / window.size.height as f32;
-
-        if window.button_down(MouseButton::Left) {
-            controller.rotation_impulse(-rx, ry);
-        } else if window.button_down(MouseButton::Right) {
-            controller.distance_impulse(2.0 * ry);
-        }
-    }
-}
-
-fn switch_closest(world: &mut World) {
-    let target = world.resources.get::<CameraController>().unwrap().target;
-    if let Some(target) = target {
-        if let Some(new) = find_closest(target, &*world) {
-            world
-                .resources
-                .get_mut::<CameraController>()
-                .unwrap()
-                .target = Some(new);
-        }
-    }
-}
-
-fn find_closest(target: Entity, world: &World) -> Option<Entity> {
-    let center = **world.get_component::<Position>(target)?;
-
-    let mut new = None;
-    let mut closest = f32::max_value();
-
-    let query = Read::<Position>::query();
-    let positions = query.iter_entities_immutable(world);
-
-    for (entity, position) in positions {
-        let distance = position.distance(center);
-        if entity != target && distance < closest {
-            new = Some(entity);
-            closest = distance;
-        }
-    }
-
-    new
+    Ok(())
 }

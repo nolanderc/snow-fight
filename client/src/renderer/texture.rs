@@ -6,8 +6,8 @@ pub fn from_image(
     encoder: &mut wgpu::CommandEncoder,
 ) -> wgpu::TextureView {
     let size = wgpu::Extent3d {
-        width: dbg!(image.width()),
-        height: dbg!(image.height()),
+        width: image.width(),
+        height: image.height(),
         depth: 1,
     };
 
@@ -39,13 +39,13 @@ pub fn from_image(
     }
 
     let texel_buffer = device
-        .create_buffer_mapped(dbg!(bytes.len()), wgpu::BufferUsage::COPY_SRC)
+        .create_buffer_mapped(bytes.len(), wgpu::BufferUsage::COPY_SRC)
         .fill_from_slice(&bytes);
 
     let source_view = wgpu::BufferCopyView {
         buffer: &texel_buffer,
         offset: 0,
-        row_pitch: dbg!(row_size),
+        row_pitch: row_size,
         image_height: image.height(),
     };
 

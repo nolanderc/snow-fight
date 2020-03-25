@@ -20,7 +20,6 @@ socket = { path = "../socket" }
 wgpu = "0.4.0"
 winit = "0.21.0"
 zerocopy = "0.3.0"
-cgmath = "0.17.0"
 logic = { path = "../logic" }
 image = "0.23.0"
 wgpu_shader = { path = "../wgpu_shader" }
@@ -29,3 +28,7 @@ rand = "0.7.3"
 [dependencies.tokio]
 version = "0.2.11"
 features = ["udp", "rt-threaded", "sync", "macros"]
+
+[dependencies.cgmath]
+version = "0.17.0"
+features = ["swizzle"]

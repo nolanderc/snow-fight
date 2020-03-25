@@ -964,6 +964,7 @@ dependencies = [
 name = "logic"
 version = "0.1.0"
 dependencies = [
+ "bitflags",
  "cgmath",
  "derive_more",
  "legion",
