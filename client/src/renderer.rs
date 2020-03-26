@@ -675,7 +675,7 @@ impl Camera {
         };
 
         let mut eye = perspective * clip;
-        eye.z = 1.0;
+        eye.z = -1.0;
         eye.w = 0.0;
 
         let world = view * eye;

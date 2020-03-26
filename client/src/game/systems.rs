@@ -1,3 +1,5 @@
+mod render;
+
 use std::f32::consts::PI;
 use std::sync::Arc;
 use std::time::Instant;
@@ -8,13 +10,13 @@ use winit::dpi::PhysicalSize;
 use winit::event::{MouseButton, VirtualKeyCode};
 use winit::window::Window;
 
-use cgmath::{Point2, Point3, Vector3};
+use cgmath::{Point2, Vector3};
 
-use logic::components::{Model, Position};
+use logic::components::Position;
 use logic::legion::prelude::*;
 use logic::resources::TimeStep;
 
-use crate::renderer::{Camera, Instance, Renderer};
+use crate::renderer::{Camera, Size};
 
 type System = logic::System;
 
@@ -100,86 +102,7 @@ pub fn update_camera() -> System {
 }
 
 pub fn render() -> logic::System {
-    let query = <(Read<Position>, Read<Model>)>::query();
-
-    SystemBuilder::new("renderer")
-        .write_resource::<Renderer>()
-        .read_resource::<Camera>()
-        .read_resource::<Mouse>()
-        .with_query(query)
-        .build(move |_, world, resources, query| {
-            let (renderer, camera, mouse) = resources;
-
-            let size = renderer.size();
-            let mut frame = renderer.next_frame();
-
-            frame.set_camera(**camera);
-
-            frame.draw(
-                Model::Rect,
-                Instance {
-                    position: [0.0, 0.0, 0.0].into(),
-                    scale: [1000.0; 3].into(),
-                    color: [0.1, 0.5, 0.1],
-                },
-            );
-
-            for (position, model) in query.iter(world) {
-                let mut instance = Instance {
-                    position: position.0,
-                    scale: [1.0, 1.0, 1.0].into(),
-                    color: [1.0; 3],
-                };
-
-                match *model {
-                    Model::Rect => {
-                        instance.position.z += 0.01;
-                        instance.color = [1.0, 0.0, 0.0];
-                    }
-
-                    Model::Circle => {
-                        instance.position.z += 0.01;
-                        instance.scale = [0.9; 3].into();
-                        instance.color = [0.0, 1.0, 0.0];
-                    }
-
-                    _ => {}
-                };
-
-                frame.draw(*model, instance);
-            }
-
-            let mut screen = 2.0 * mouse.position;
-            screen.x /= size.width as f32;
-            screen.x -= 1.0;
-            screen.y /= size.height as f32;
-            screen.y -= 1.0;
-
-            screen *= -1.0;
-
-            let cursor_dir = camera.cast_ray(size, screen);
-            let dt = -camera.position.z / cursor_dir.z;
-            let pointer = camera.position + dt * cursor_dir;
-
-            let tile = Point3 {
-                x: pointer.x.round(),
-                y: pointer.y.round(),
-                z: 0.0,
-            };
-
-            frame.draw(
-                Model::Circle,
-                Instance {
-                    position: tile + Vector3::new(0.0, 0.0, 0.01),
-                    scale: [1.0; 3].into(),
-                    color: [0.9, 0.9, 0.1],
-                },
-            );
-
-
-            frame.submit();
-            renderer.cleanup();
-        })
+    render::system()
 }
 
 impl FpsMeter {
@@ -311,5 +234,16 @@ impl Default for Mouse {
         Mouse {
             position: [0.0, 0.0].into(),
         }
+    }
+}
+
+impl Mouse {
+    pub fn position_screen(&self, size: Size) -> Point2<f32> {
+        let mut screen = 2.0 * self.position;
+        screen.x /= size.width as f32;
+        screen.x -= 1.0;
+        screen.y /= size.height as f32;
+        screen.y -= 1.0;
+        screen
     }
 }

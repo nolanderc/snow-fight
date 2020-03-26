@@ -11,40 +11,27 @@ pub mod components;
 pub mod resources;
 pub mod systems;
 
-use crate::components::{player::Player, tile::Tile, Model, Position};
+pub mod tile_map;
+
+use crate::components::{player::Player, Model, Position};
 use crate::resources::TimeStep;
+use crate::tile_map::{Tile, TileKind, TileMap};
 
 pub type System = Box<dyn Schedulable>;
+
+const TREES: usize = 15;
+const MUSHROOMS: usize = 5;
+const SIZE: usize = 10;
 
 /// Creates all the required resources in the world.
 pub fn create_world() -> World {
     let mut world = World::new();
+
     world.resources.insert(TimeStep::default());
 
-    let mut rng = rand::thread_rng();
-
-    let trees = 1_000;
-    let mushrooms = 100;
-    let size = 40;
-
-    let mut tiles = (-size..=size)
-        .flat_map(|i| (-size..=size).map(move |j| (i, j)))
-        .filter(|pos| *pos != (0, 0))
-        .collect::<Vec<_>>();
-
-    tiles.shuffle(&mut rng);
-
-    let mut tiles = tiles.into_iter();
-
-    for (x, y) in tiles.by_ref().take(trees) {
-        let position = Position([x as f32, y as f32, 0.0].into());
-        world.insert((Tile {},), Some((position, Model::Tree)));
-    }
-
-    for (x, y) in tiles.by_ref().take(mushrooms) {
-        let position = Position([x as f32, y as f32, 0.0].into());
-        world.insert((Tile {},), Some((position, Model::Mushroom)));
-    }
+    let mut map = island_map(SIZE as i32);
+    spawn_objects(&mut world, &mut map);
+    world.resources.insert(map);
 
     world
 }
@@ -65,4 +52,54 @@ pub fn add_player(world: &mut World) -> Entity {
 
     let entities = world.insert(tags, Some((position, model, input)));
     entities[0]
+}
+
+fn island_map(size: i32) -> TileMap {
+    let mut map = TileMap::new();
+
+    let r = size - 2;
+
+    for x in -size..=size {
+        for y in -size..=size {
+            let mag = x * x + y * y;
+            let r2 = r * r;
+
+            let kind = if mag <= r2 {
+                if mag as f32 / r2 as f32 >= 0.7 {
+                    TileKind::Sand
+                } else {
+                    TileKind::Grass
+                }
+            } else {
+                TileKind::Water
+            };
+
+            map.insert([x, y].into(), Tile::default().with_kind(kind));
+        }
+    }
+
+    map
+}
+
+fn spawn_objects(world: &mut World, map: &mut TileMap) {
+    let mut tiles = map
+        .iter_mut()
+        .filter(|(pos, _)| (pos.x, pos.y) != (0, 0))
+        .filter(|(_, tile)| matches!(tile.kind, TileKind::Grass))
+        .collect::<Vec<_>>();
+
+    let mut rng = rand::thread_rng();
+    tiles.shuffle(&mut rng);
+
+    let mut tiles = tiles.into_iter();
+    let mut spawn = |count, model| {
+        for (coord, tile) in tiles.by_ref().take(count) {
+            let position = Position([coord.x as f32, coord.y as f32, 0.0].into());
+            let entities = world.insert((), Some((position, model)));
+            tile.entity = Some(entities[0]);
+        }
+    };
+
+    spawn(TREES, Model::Tree);
+    spawn(MUSHROOMS, Model::Mushroom);
 }
