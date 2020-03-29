@@ -1,8 +1,10 @@
-use cgmath::Point2;
+use cgmath::{Point2, Point3, Vector3};
+use derive_more::{Deref, DerefMut, From};
 use legion::prelude::*;
 use std::collections::HashMap;
 
-pub type TileCoord = Point2<i32>;
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, From, Deref, DerefMut)]
+pub struct TileCoord(pub Point2<i32>);
 
 pub struct TileMap {
     tiles: HashMap<TileCoord, Tile>,
@@ -10,7 +12,7 @@ pub struct TileMap {
 
 #[derive(Debug, Clone)]
 pub struct Tile {
-    pub entity: Option<Entity>,
+    pub slot: Option<Placed>,
     pub kind: TileKind,
 }
 
@@ -19,6 +21,12 @@ pub enum TileKind {
     Water,
     Grass,
     Sand,
+}
+
+#[derive(Debug, Clone)]
+pub struct Placed {
+    pub entity: Entity,
+    pub durability: f32,
 }
 
 impl Default for TileMap {
@@ -58,7 +66,7 @@ impl TileMap {
 impl Default for Tile {
     fn default() -> Self {
         Tile {
-            entity: None,
+            slot: None,
             kind: TileKind::Water,
         }
     }
@@ -67,5 +75,25 @@ impl Default for Tile {
 impl Tile {
     pub fn with_kind(self, kind: TileKind) -> Self {
         Tile { kind, ..self }
+    }
+}
+
+impl From<[i32; 2]> for TileCoord {
+    fn from(point: [i32; 2]) -> Self {
+        TileCoord(point.into())
+    }
+}
+
+impl TileCoord {
+    pub fn from_world(world: Point3<f32>) -> TileCoord {
+        let x = world.x.round() as i32;
+        let y = world.y.round() as i32;
+        [x, y].into()
+    }
+
+    pub fn from_ray(origin: Point3<f32>, direction: Vector3<f32>) -> TileCoord {
+        let intersection_time = -origin.z / direction.z;
+        let intersection = origin + intersection_time * direction;
+        TileCoord::from_world(intersection)
     }
 }

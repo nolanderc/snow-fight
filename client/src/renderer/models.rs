@@ -62,6 +62,7 @@ impl ModelRegistry {
             Model::Mushroom => self
                 .push_image("assets/mushroom.png", device, encoder)
                 .context("failed to build model for image")?,
+            Model::Cube => self.push_cube(),
         };
 
         self.models.insert(kind, data);
@@ -109,6 +110,44 @@ impl ModelRegistry {
 
         let indices = [0, 1, 2, 2, 3, 0];
         let range = self.add_vertices(&corners, &indices);
+
+        ModelData {
+            indices: range,
+            texture: None,
+        }
+    }
+
+    fn push_cube(&mut self) -> ModelData {
+        let normals = [
+            Vector3::new(1.0, 0.0, 0.0),
+            Vector3::new(-1.0, 0.0, 0.0),
+            Vector3::new(0.0, 1.0, 0.0),
+            Vector3::new(0.0, -1.0, 0.0),
+            Vector3::new(0.0, 0.0, 1.0),
+            Vector3::new(0.0, 0.0, -1.0),
+        ];
+
+        let mut vertices = Vec::with_capacity(4 * 6);
+        let mut indices = Vec::with_capacity(6 * 6);
+
+        for &normal in &normals {
+            let quad = Quad {
+                size: [1.0; 2].into(),
+                normal,
+                center: Point3::from_vec(0.5 * normal),
+                tex_start: [0.0, 0.0],
+                tex_end: [1.0, 1.0],
+            };
+
+            let face = QuadFace::from(quad);
+
+            let start_vertex = vertices.len() as u32;
+            vertices.extend_from_slice(&face.vertices);
+            let offset_indices = QuadFace::INDICES.iter().map(|i| *i + start_vertex);
+            indices.extend(offset_indices);
+        }
+
+        let range = self.add_vertices(&vertices, &indices);
 
         ModelData {
             indices: range,
@@ -226,8 +265,8 @@ impl ModelRegistry {
                         let x = col as f32 - width as f32 / 2.0;
                         let z = (height - row - 1) as f32;
 
-                        let center =
-                            Point3::new(x + 0.5, 0.0, z + 0.5) * VOXEL_SIZE + 0.5 * VOXEL_SIZE * normal;
+                        let center = Point3::new(x + 0.5, 0.0, z + 0.5) * VOXEL_SIZE
+                            + 0.5 * VOXEL_SIZE * normal;
 
                         let u = (col as f32 + 0.1) / width as f32;
                         let v = (row as f32 + 0.1) / height as f32;
@@ -269,7 +308,6 @@ impl ModelRegistry {
             texture: Some(Arc::new(texture)),
         })
     }
-
 }
 
 struct QuadFace {

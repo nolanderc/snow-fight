@@ -1,13 +1,14 @@
 mod systems;
 
-use crate::renderer::{Renderer, RendererConfig};
-use systems::{CameraController, Mouse, WindowState};
+use crate::renderer::{Camera, Renderer, RendererConfig, Size};
+use systems::{camera::Controller, render::RenderOptions, WindowState};
 
 use anyhow::Result;
 use cgmath::prelude::*;
-use logic::components::Position;
+use cgmath::{Point2, Point3, Vector3};
+use logic::components::{Direction, Movement, Position, WorldInteraction};
 use logic::legion::prelude::*;
-use logic::systems::movement::{self, Direction};
+use logic::tile_map::TileCoord;
 use std::f32::consts::PI;
 use std::sync::Arc;
 
@@ -89,20 +90,15 @@ impl Game {
         systems::init_world(&mut world);
         world.resources.insert(renderer);
         world.resources.insert(WindowState::new(window));
-        world.resources.insert(Mouse::default());
 
         let player = logic::add_player(&mut world);
-        world
-            .resources
-            .get_mut::<CameraController>()
-            .unwrap()
-            .target = Some(player);
+        world.resources.get_mut::<Controller>().unwrap().target = Some(player);
 
         let schedule = logic::add_systems(Default::default())
             .add_system(systems::fps_display())
-            .add_system(systems::update_camera())
+            .add_system(systems::camera::update())
             .flush()
-            .add_system(systems::render());
+            .add_system(systems::render::render());
 
         let schedule = schedule.build();
 
@@ -120,7 +116,7 @@ impl Game {
 
     pub fn handle_event(&mut self, event: Event) {
         match event {
-            Event::Resized(size) => self.resize(size),
+            Event::Resized(PhysicalSize { width, height }) => self.resize(Size { width, height }),
             Event::KeyDown { key, scancode } => {
                 self.key_down(key, scancode);
                 let mut window = self.world.resources.get_mut::<WindowState>().unwrap();
@@ -132,16 +128,19 @@ impl Game {
                 window.key_released(key);
             }
             Event::MouseDown { button } => {
+                self.button_down(button);
                 let mut window = self.world.resources.get_mut::<WindowState>().unwrap();
                 window.button_pressed(button);
             }
             Event::MouseUp { button } => {
+                self.button_up(button);
                 let mut window = self.world.resources.get_mut::<WindowState>().unwrap();
                 window.button_released(button);
             }
             Event::CursorMoved { x, y } => {
-                let mut mouse = self.world.resources.get_mut::<Mouse>().unwrap();
-                mouse.position = [x, y].into();
+                self.cursor_moved([x, y].into());
+                let mut window = self.world.resources.get_mut::<WindowState>().unwrap();
+                window.mouse_position = [x, y].into();
             }
             Event::MouseMotion { delta_x, delta_y } => {
                 self.rotate_camera(delta_x, delta_y);
@@ -149,8 +148,7 @@ impl Game {
             Event::MouseScroll { delta_y, .. } => {
                 let window = self.world.resources.get::<WindowState>().unwrap();
                 if window.key_down(VirtualKeyCode::Space) {
-                    let mut controller =
-                        self.world.resources.get_mut::<CameraController>().unwrap();
+                    let mut controller = self.world.resources.get_mut::<Controller>().unwrap();
                     controller.distance_impulse(-0.01 * delta_y)
                 }
             }
@@ -159,7 +157,7 @@ impl Game {
         }
     }
 
-    fn resize(&mut self, size: PhysicalSize<u32>) {
+    fn resize(&mut self, size: Size) {
         let mut window = self.world.resources.get_mut::<WindowState>().unwrap();
         window.size = size;
 
@@ -170,12 +168,16 @@ impl Game {
     fn key_down(&mut self, key: VirtualKeyCode, scancode: ScanCode) {
         match key {
             VirtualKeyCode::Tab => self.switch_closest(),
+            VirtualKeyCode::F1 => {
+                let mut options = self.world.resources.get_mut::<RenderOptions>().unwrap();
+                options.render_bounds ^= true;
+            },
             _ => {}
         }
 
         let set_direction = |game: &mut Game, direction| {
             game.world
-                .get_component_mut::<movement::Input>(game.player)
+                .get_component_mut::<Movement>(game.player)
                 .unwrap()
                 .direction
                 .insert(direction)
@@ -188,11 +190,11 @@ impl Game {
             qwerty::D => set_direction(self, Direction::EAST),
 
             qwerty::Q => {
-                let mut controller = self.world.resources.get_mut::<CameraController>().unwrap();
+                let mut controller = self.world.resources.get_mut::<Controller>().unwrap();
                 controller.rotation_impulse(PI / 2.0);
             }
             qwerty::E => {
-                let mut controller = self.world.resources.get_mut::<CameraController>().unwrap();
+                let mut controller = self.world.resources.get_mut::<Controller>().unwrap();
                 controller.rotation_impulse(-PI / 2.0);
             }
 
@@ -208,7 +210,7 @@ impl Game {
 
         let reset_direction = |game: &mut Game, direction| {
             game.world
-                .get_component_mut::<movement::Input>(game.player)
+                .get_component_mut::<Movement>(game.player)
                 .unwrap()
                 .direction
                 .remove(direction)
@@ -224,13 +226,20 @@ impl Game {
         }
     }
 
+    fn button_down(&mut self, _button: MouseButton) {}
+
+    fn button_up(&mut self, _button: MouseButton) {}
+
+    fn cursor_moved(&mut self, _position: Point2<f32>) {}
+
     pub fn tick(&mut self) {
+        self.update_breaking();
         self.schedule.execute(&mut self.world)
     }
 
     fn rotate_camera(&mut self, dx: f32, dy: f32) {
         let window = self.world.resources.get::<WindowState>().unwrap();
-        let mut controller = self.world.resources.get_mut::<CameraController>().unwrap();
+        let mut controller = self.world.resources.get_mut::<Controller>().unwrap();
 
         if window.key_down(VirtualKeyCode::Space) {
             if window.button_down(MouseButton::Left) {
@@ -244,19 +253,10 @@ impl Game {
     }
 
     fn switch_closest(&mut self) {
-        let target = self
-            .world
-            .resources
-            .get::<CameraController>()
-            .unwrap()
-            .target;
+        let target = self.world.resources.get::<Controller>().unwrap().target;
         if let Some(target) = target {
             if let Some(new) = self.find_closest(target) {
-                self.world
-                    .resources
-                    .get_mut::<CameraController>()
-                    .unwrap()
-                    .target = Some(new);
+                self.world.resources.get_mut::<Controller>().unwrap().target = Some(new);
             }
         }
     }
@@ -279,5 +279,29 @@ impl Game {
         }
 
         new
+    }
+
+    fn update_breaking(&mut self) {
+        let (origin, direction) = self.mouse_ray();
+        let tile = TileCoord::from_ray(origin, direction);
+
+        let is_breaking = self
+            .world
+            .resources
+            .get::<WindowState>()
+            .unwrap()
+            .button_down(MouseButton::Left);
+
+        self.world
+            .get_component_mut::<WorldInteraction>(self.player)
+            .unwrap()
+            .breaking = if is_breaking { Some(tile) } else { None };
+    }
+
+    fn mouse_ray(&self) -> (Point3<f32>, Vector3<f32>) {
+        let camera = self.world.resources.get::<Camera>().unwrap();
+        let window = self.world.resources.get::<WindowState>().unwrap();
+        let direction = camera.cast_ray(window.size, window.mouse_screen());
+        (camera.position, direction)
     }
 }

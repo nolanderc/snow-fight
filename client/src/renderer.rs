@@ -684,3 +684,24 @@ impl Camera {
         delta.normalize()
     }
 }
+
+impl Instance {
+    pub fn new(position: impl Into<Point3<f32>>) -> Self {
+        Instance {
+            position: position.into(),
+            scale: [1.0; 3].into(),
+            color: [1.0; 3],
+        }
+    }
+
+    pub fn with_scale(self, scale: impl Into<Vector3<f32>>) -> Self {
+        Instance {
+            scale: scale.into(),
+            ..self
+        }
+    }
+
+    pub fn with_color(self, color: [f32; 3]) -> Self {
+        Instance { color, ..self }
+    }
+}

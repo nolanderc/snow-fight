@@ -1,4 +1,6 @@
 pub mod movement;
+pub mod tile_interaction;
+pub mod collision;
 
 use legion::system::SystemBuilder;
 use std::time::Instant;

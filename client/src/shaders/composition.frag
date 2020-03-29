@@ -16,7 +16,7 @@ layout(set = 0, binding = 2) uniform texture2D g_color;
 layout(set = 0, binding = 3) uniform texture2D g_normal;
 layout(set = 0, binding = 4) uniform texture2D g_position;
 
-const float EDGE_DEPTH = 0.01;
+const float EDGE_DEPTH = 0.005;
 const float EDGE_NORMAL = 0.01;
 
 const float LIGHT_AMBIENT = 0.4;
