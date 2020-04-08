@@ -1,16 +1,20 @@
 use super::{Instance, Shaders, Size, Vertex};
 
+use zerocopy::AsBytes;
+
 use cgmath::{prelude::*, Matrix4};
+
 use std::sync::Arc;
+
 use wgpu_shader::VertexLayout;
 
 pub struct GBuffer {
     device: Arc<wgpu::Device>,
 
     // Buffer attachments
-    color: wgpu::TextureView,
-    normal: wgpu::TextureView,
-    position: wgpu::TextureView,
+    color: BufferTexture,
+    normal: BufferTexture,
+    position: BufferTexture,
 
     depth: wgpu::TextureView,
 
@@ -22,16 +26,20 @@ pub struct GBuffer {
     model_layout: wgpu::BindGroupLayout,
 }
 
-#[derive(Debug, Copy, Clone)]
+struct BufferTexture {
+    view: wgpu::TextureView,
+}
+
+#[derive(Debug, Copy, Clone, AsBytes)]
 #[repr(C)]
 pub struct Uniforms {
-    pub transform: cgmath::Matrix4<f32>,
+    pub transform: [[f32; 4]; 4],
 }
 
 impl Default for Uniforms {
     fn default() -> Self {
         Uniforms {
-            transform: Matrix4::identity(),
+            transform: Matrix4::identity().into(),
         }
     }
 }
@@ -63,23 +71,24 @@ impl GBuffer {
         a: 1e6,
     };
 
-    const BIND_GROUP_BINDINGS: &'static [wgpu::BindGroupLayoutBinding] =
-        &[wgpu::BindGroupLayoutBinding {
+    const BIND_GROUP_BINDINGS: &'static [wgpu::BindGroupLayoutEntry] =
+        &[wgpu::BindGroupLayoutEntry {
             binding: 0,
             visibility: wgpu::ShaderStage::VERTEX,
             ty: wgpu::BindingType::UniformBuffer { dynamic: false },
         }];
 
-    const MODEL_GROUP_BINDINGS: &'static [wgpu::BindGroupLayoutBinding] = &[
-        wgpu::BindGroupLayoutBinding {
+    const MODEL_GROUP_BINDINGS: &'static [wgpu::BindGroupLayoutEntry] = &[
+        wgpu::BindGroupLayoutEntry {
             binding: 0,
             visibility: wgpu::ShaderStage::FRAGMENT,
-            ty: wgpu::BindingType::Sampler,
+            ty: wgpu::BindingType::Sampler { comparison: false },
         },
-        wgpu::BindGroupLayoutBinding {
+        wgpu::BindGroupLayoutEntry {
             binding: 1,
             visibility: wgpu::ShaderStage::FRAGMENT,
             ty: wgpu::BindingType::SampledTexture {
+                component_type: wgpu::TextureComponentType::Float,
                 multisampled: false,
                 dimension: wgpu::TextureViewDimension::D2,
             },
@@ -139,7 +148,7 @@ impl GBuffer {
         let normal = Self::create_buffer_texture(&device, size, Self::NORMAL_TEXTURE_FORMAT);
         let position = Self::create_buffer_texture(&device, size, Self::POSITION_TEXTURE_FORMAT);
 
-        let depth = Self::create_buffer_texture(&device, size, Self::DEPTH_TEXTURE_FORMAT);
+        let depth = Self::create_buffer_texture(&device, size, Self::DEPTH_TEXTURE_FORMAT).view;
 
         let [main_layout, model_layout] = Self::create_bind_group_layouts(&device);
         let pipeline = Self::create_render_pipeline(&device, &[&main_layout, &model_layout]);
@@ -151,6 +160,10 @@ impl GBuffer {
         };
 
         let bind_group = Self::create_bind_group(&device, &main_layout, bindings);
+
+        // 0x7fc753e840a0
+        //
+        // 0x7fc753e67480
 
         GBuffer {
             device,
@@ -174,8 +187,9 @@ impl GBuffer {
         device: &wgpu::Device,
         size: Size,
         format: wgpu::TextureFormat,
-    ) -> wgpu::TextureView {
+    ) -> BufferTexture {
         let descriptor = wgpu::TextureDescriptor {
+            label: None,
             size: wgpu::Extent3d {
                 width: size.width,
                 height: size.height,
@@ -189,7 +203,10 @@ impl GBuffer {
             usage: wgpu::TextureUsage::WRITE_ALL | wgpu::TextureUsage::READ_ALL,
         };
 
-        device.create_texture(&descriptor).create_default_view()
+        let texture = device.create_texture(&descriptor);
+        let view = texture.create_default_view();
+
+        BufferTexture { view }
     }
 
     fn create_render_pipeline(
@@ -215,8 +232,10 @@ impl GBuffer {
             primitive_topology: wgpu::PrimitiveTopology::TriangleList,
             color_states: Self::COLOR_STATES,
             depth_stencil_state: Some(Self::DEPTH_STENCIL_STATE),
-            index_format: wgpu::IndexFormat::Uint32,
-            vertex_buffers: Self::VERTEX_BUFFERS,
+            vertex_state: wgpu::VertexStateDescriptor {
+                index_format: wgpu::IndexFormat::Uint32,
+                vertex_buffers: Self::VERTEX_BUFFERS,
+            },
             sample_count: 1,
             sample_mask: !0,
             alpha_to_coverage_enabled: false,
@@ -227,10 +246,12 @@ impl GBuffer {
 
     fn create_bind_group_layouts(device: &wgpu::Device) -> [wgpu::BindGroupLayout; 2] {
         let main_desc = wgpu::BindGroupLayoutDescriptor {
+            label: None,
             bindings: Self::BIND_GROUP_BINDINGS,
         };
 
         let model_desc = wgpu::BindGroupLayoutDescriptor {
+            label: None,
             bindings: Self::MODEL_GROUP_BINDINGS,
         };
 
@@ -246,6 +267,7 @@ impl GBuffer {
         bindings: Bindings,
     ) -> wgpu::BindGroup {
         let descriptor = wgpu::BindGroupDescriptor {
+            label: None,
             bindings: &[wgpu::Binding {
                 binding: 0,
                 resource: wgpu::BindingResource::Buffer {
@@ -260,9 +282,10 @@ impl GBuffer {
     }
 
     fn create_uniform_buffer(device: &wgpu::Device, uniforms: Uniforms) -> wgpu::Buffer {
-        device
-            .create_buffer_mapped(1, wgpu::BufferUsage::UNIFORM | wgpu::BufferUsage::COPY_DST)
-            .fill_from_slice(&[uniforms])
+        device.create_buffer_with_data(
+            uniforms.as_bytes(),
+            wgpu::BufferUsage::UNIFORM | wgpu::BufferUsage::COPY_DST,
+        )
     }
 
     pub fn model_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
@@ -270,15 +293,15 @@ impl GBuffer {
     }
 
     pub fn begin_render_pass<'a>(
-        &self,
+        &'a self,
         encoder: &'a mut wgpu::CommandEncoder,
         uniforms: Uniforms,
     ) -> wgpu::RenderPass<'a> {
         self.update_uniforms(encoder, uniforms);
 
-        let color = Self::color_attachment(&self.color, Self::COLOR_CLEAR_COLOR);
-        let normal = Self::color_attachment(&self.normal, Self::NORMAL_CLEAR_COLOR);
-        let position = Self::color_attachment(&self.position, Self::POSITION_CLEAR_COLOR);
+        let color = Self::color_attachment(&self.color.view, Self::COLOR_CLEAR_COLOR);
+        let normal = Self::color_attachment(&self.normal.view, Self::NORMAL_CLEAR_COLOR);
+        let position = Self::color_attachment(&self.position.view, Self::POSITION_CLEAR_COLOR);
 
         let depth = Self::depth_attachment(&self.depth);
 
@@ -298,8 +321,7 @@ impl GBuffer {
     fn update_uniforms(&self, encoder: &mut wgpu::CommandEncoder, uniforms: Uniforms) {
         let staging = self
             .device
-            .create_buffer_mapped(1, wgpu::BufferUsage::COPY_SRC)
-            .fill_from_slice(&[uniforms]);
+            .create_buffer_with_data(uniforms.as_bytes(), wgpu::BufferUsage::COPY_SRC);
 
         encoder.copy_buffer_to_buffer(
             &staging,
@@ -323,9 +345,9 @@ impl GBuffer {
         }
     }
 
-    fn depth_attachment<'a>(
-        attachment: &'a wgpu::TextureView,
-    ) -> wgpu::RenderPassDepthStencilAttachmentDescriptor<&'a wgpu::TextureView> {
+    fn depth_attachment(
+        attachment: &wgpu::TextureView,
+    ) -> wgpu::RenderPassDepthStencilAttachmentDescriptor {
         wgpu::RenderPassDepthStencilAttachmentDescriptor {
             attachment,
             clear_depth: 1.0,
@@ -337,15 +359,15 @@ impl GBuffer {
         }
     }
 
-    pub fn color_buffer(&self) -> &wgpu::TextureView {
-        &self.color
+    pub fn color_buffer_view(&self) -> &wgpu::TextureView {
+        &self.color.view
     }
 
-    pub fn normal_buffer(&self) -> &wgpu::TextureView {
-        &self.normal
+    pub fn normal_buffer_view(&self) -> &wgpu::TextureView {
+        &self.normal.view
     }
 
-    pub fn position_buffer(&self) -> &wgpu::TextureView {
-        &self.position
+    pub fn position_buffer_view(&self) -> &wgpu::TextureView {
+        &self.position.view
     }
 }

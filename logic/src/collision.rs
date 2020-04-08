@@ -16,6 +16,16 @@ pub struct Overlap {
     pub resolution: Vector3<f32>,
 }
 
+#[derive(Debug, Copy, Clone)]
+pub struct RayIntersection {
+    pub distance: f32,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct SweepCollision {
+    pub entry: f32,
+}
+
 impl AlignedBox {
     /// Create a new bounding box centered around a given point.
     pub fn centered(center: Point3<f32>, size: Vector3<f32>) -> Self {
@@ -84,5 +94,65 @@ impl AlignedBox {
         }
 
         Overlap { volume, resolution }
+    }
+
+    pub fn ray_intersection(
+        self,
+        origin: Point3<f32>,
+        direction: Vector3<f32>,
+    ) -> Option<RayIntersection> {
+        const EPSILON: f32 = 0.0001;
+
+        let mut entry_distance = -std::f32::INFINITY;
+        let mut exit_distance = std::f32::INFINITY;
+
+        for i in 0..3 {
+            let (entry_plane, exit_plane) = if direction[i] > 0.0 {
+                (self.low[i], self.high[i])
+            } else {
+                (self.high[i], self.low[i])
+            };
+
+            let (entry_time, exit_time) = if direction[i].abs() < EPSILON {
+                if self.low[i] <= origin[i] && origin[i] <= self.high[i] {
+                    (-std::f32::INFINITY, std::f32::INFINITY)
+                } else {
+                    (std::f32::INFINITY, -std::f32::INFINITY)
+                }
+            } else {
+                (
+                    (entry_plane - origin[i]) / direction[i],
+                    (exit_plane - origin[i]) / direction[i],
+                )
+            };
+
+            entry_distance = f32::max(entry_distance, entry_time);
+            exit_distance = f32::min(exit_distance, exit_time);
+        }
+
+        if entry_distance <= exit_distance {
+            Some(RayIntersection {
+                distance: entry_distance,
+            })
+        } else {
+            None
+        }
+    }
+
+    pub fn sweep(self, delta: Vector3<f32>, other: Self) -> Option<SweepCollision> {
+        let merged = AlignedBox {
+            high: other.high,
+            low: other.low - (self.high - self.low),
+        };
+
+        let intersection = merged.ray_intersection(self.low, delta)?;
+
+        if 0.0 <= intersection.distance && intersection.distance <= 1.0 {
+            Some(SweepCollision {
+                entry: intersection.distance,
+            })
+        } else {
+            None
+        }
     }
 }

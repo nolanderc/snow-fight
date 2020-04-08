@@ -12,6 +12,7 @@ pub fn from_image(
     };
 
     let texture_desc = wgpu::TextureDescriptor {
+        label: None,
         size,
         array_layer_count: 1,
         mip_level_count: 1,
@@ -38,15 +39,13 @@ pub fn from_image(
         }
     }
 
-    let texel_buffer = device
-        .create_buffer_mapped(bytes.len(), wgpu::BufferUsage::COPY_SRC)
-        .fill_from_slice(&bytes);
+    let texel_buffer = device.create_buffer_with_data(&bytes, wgpu::BufferUsage::COPY_SRC);
 
     let source_view = wgpu::BufferCopyView {
         buffer: &texel_buffer,
         offset: 0,
-        row_pitch: row_size,
-        image_height: image.height(),
+        bytes_per_row: row_size,
+        rows_per_image: image.height(),
     };
 
     let dest_view = wgpu::TextureCopyView {

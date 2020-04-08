@@ -14,9 +14,9 @@ layout(location = 0) in vec3 v_position;
 layout(location = 1) in vec2 v_tex_coord;
 layout(location = 2) in vec3 v_normal;
 
-layout(location = 3) in vec3 i_position;
-layout(location = 4) in vec3 i_scale;
-layout(location = 5) in vec3 i_color;
+layout(location = 4) in vec3 i_position;
+layout(location = 5) in vec3 i_scale;
+layout(location = 6) in vec3 i_color;
 
 layout(binding = 0) uniform Locals {
     mat4 u_transform;

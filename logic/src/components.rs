@@ -1,12 +1,20 @@
 use bitflags::bitflags;
-use cgmath::Point3;
+
+use cgmath::{Point3, Vector3};
+
 use derive_more::{Deref, DerefMut};
 
+use legion::prelude::*;
+
+use std::collections::VecDeque;
+
 use crate::collision;
-use crate::tile_map::TileCoord;
 
 #[derive(Debug, Copy, Clone, Deref, DerefMut)]
 pub struct Position(pub Point3<f32>);
+
+#[derive(Debug, Copy, Clone, Deref, DerefMut)]
+pub struct Velocity(pub Vector3<f32>);
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum Model {
@@ -49,10 +57,13 @@ bitflags! {
 
 #[derive(Debug, Clone)]
 pub struct WorldInteraction {
-    /// The tile currently being broken by the entity.
-    pub breaking: Option<TileCoord>,
+    /// The entity currently being broken by this entity.
+    pub breaking: Option<Entity>,
     /// The maximum range of interacitons
     pub reach: f32,
+
+    /// The entity currently held by a player.
+    pub holding: Option<Entity>,
 }
 
 impl Default for WorldInteraction {
@@ -60,9 +71,61 @@ impl Default for WorldInteraction {
         WorldInteraction {
             breaking: None,
             reach: 2.0,
+            holding: None,
+        }
+    }
+}
+
+/// An entity that can be broken by the player.
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub struct Breakable {
+    pub durability: f32,
+}
+
+impl Default for Breakable {
+    fn default() -> Self {
+        Breakable { durability: 1.0 }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Collision {
+    pub bounds: collision::AlignedBox,
+    pub ignored: Option<Entity>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Health {
+    pub max_points: u32,
+    pub points: u32,
+}
+
+impl Health {
+    pub fn with_max(points: u32) -> Health {
+        Health {
+            max_points: points,
+            points,
         }
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct CollisionBox(pub collision::AlignedBox);
+pub struct Projectile {
+    pub damage: u32,
+}
+
+#[derive(Debug, Default)]
+pub struct CollisionListener {
+    pub collisions: VecDeque<CollisionEvent>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CollisionEvent {
+    pub entity: Entity,
+}
+
+impl CollisionListener {
+    pub fn new() -> CollisionListener {
+        Self::default()
+    }
+}

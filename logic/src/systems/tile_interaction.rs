@@ -1,40 +1,51 @@
-use cgmath::{prelude::*, Point3};
+use cgmath::{prelude::*, Vector3};
 use legion::prelude::*;
 
-use crate::components::{Position, WorldInteraction};
+use crate::components::{Breakable, Position, WorldInteraction};
 use crate::resources::TimeStep;
-use crate::tile_map::TileMap;
 use crate::System;
 
 pub fn system() -> System {
-    let query = <(Read<WorldInteraction>, Read<Position>)>::query();
+    let query = <(Write<WorldInteraction>, Read<Position>)>::query();
 
     SystemBuilder::new("tile_interaction")
         .read_resource::<TimeStep>()
-        .write_resource::<TileMap>()
+        .read_component::<Position>()
+        .write_component::<Breakable>()
+        .write_component::<Position>()
         .with_query(query)
         .build(move |cmd, world, resources, query| {
-            let (dt, map) = resources;
+            let dt = resources;
 
-            for (interaction, position) in query.iter(world) {
-                || -> Option<_> {
-                    let tile_coord = interaction.breaking?;
-                    let tile_world = Point3::new(tile_coord.x as f32, tile_coord.y as f32, 0.0);
-
-                    if tile_world.distance(position.0) <= interaction.reach {
-                        let tile = map.get_mut(tile_coord)?;
-                        let slot = tile.slot.as_mut()?;
-
-                        slot.durability -= dt.secs_f32();
-
-                        if slot.durability <= 0.0 {
-                            cmd.delete(slot.entity);
-                            tile.slot = None;
-                        }
+            for (mut interaction, position) in query.iter(world) {
+                if let Some(held) = interaction.holding {
+                    if let Some(mut float_pos) = world.get_component_mut::<Position>(held) {
+                        float_pos.0 = position.0 + Vector3::new(0.0, 0.0, 1.0);
                     }
 
-                    Some(())
-                }();
+                    continue;
+                } else {
+                    || -> Option<_> {
+                        let target = interaction.breaking?;
+                        let distance = world
+                            .get_component::<Position>(target)?
+                            .distance(position.0);
+
+                        if distance <= interaction.reach {
+                            let breakable = world.get_component_mut::<Breakable>(target);
+                            if let Some(mut breakable) = breakable {
+                                breakable.durability -= dt.secs_f32();
+
+                                if breakable.durability <= 0.0 {
+                                    interaction.holding = interaction.breaking.take();
+                                    cmd.remove_component::<Breakable>(target);
+                                }
+                            }
+                        }
+
+                        Some(())
+                    }();
+                }
             }
         })
 }

@@ -16,12 +16,8 @@ layout(set = 1, binding = 1) uniform texture2D u_texture;
 void main() {
     vec4 base_color = texture(sampler2D(u_texture, u_sampler), f_tex_coord);
 
-    if (base_color.a < 1.0) {
-        discard;
-    } else {
-        out_color = vec4(base_color.rgb * f_color, 1.0);
-        out_normal = vec4(f_normal, f_depth);
-        out_position = vec4(f_position, f_depth);
-    }
+    out_color = vec4(base_color.rgb + f_color, 1.0);
+    out_normal = vec4(f_normal, f_depth);
+    out_position = vec4(f_position, f_depth);
 }
 

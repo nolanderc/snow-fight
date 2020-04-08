@@ -18,8 +18,14 @@ pub(super) struct ModelRegistry {
 }
 
 pub struct ModelData {
-    pub(super) indices: Range<u32>,
+    pub(super) indices: IndexRange,
     pub(super) texture: Option<Arc<wgpu::TextureView>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct IndexRange {
+    pub ccw: Range<u32>,
+    pub cw: Range<u32>,
 }
 
 impl ModelRegistry {
@@ -82,13 +88,18 @@ impl ModelRegistry {
         self.models.get(&model)
     }
 
-    fn add_vertices(&mut self, vertices: &[Vertex], indices: &[u32]) -> Range<u32> {
-        let start_vertex = self.vertices.len() as u32;
+    fn add_vertices(&mut self, vertices: &[Vertex], indices: &[u32]) -> IndexRange {
+        let ccw = self.add_indices(indices.iter().copied());
+        let cw = self.add_indices(indices.iter().rev().copied());
         self.vertices.extend_from_slice(vertices);
+        IndexRange { ccw, cw }
+    }
 
+    fn add_indices(&mut self, indices: impl Iterator<Item = u32>) -> Range<u32> {
+        let start_vertex = self.vertices.len() as u32;
         let start_index = self.indices.len() as u32;
         self.indices
-            .extend(indices.iter().map(|index| start_vertex + index));
+            .extend(indices.map(|index| start_vertex + index));
         let end_index = self.indices.len() as u32;
 
         start_index..end_index
@@ -96,9 +107,9 @@ impl ModelRegistry {
 
     fn push_rect(&mut self) -> ModelData {
         let vertex = |x, y| Vertex {
-            position: [x, y, 0.0].into(),
+            position: [x, y, 0.0],
             tex_coord: [x + 0.5, y + 0.5],
-            normal: [0.0, 0.0, 1.0].into(),
+            normal: [0.0, 0.0, 1.0],
         };
 
         let corners = [
@@ -139,11 +150,11 @@ impl ModelRegistry {
                 tex_end: [1.0, 1.0],
             };
 
-            let face = QuadFace::from(quad);
+            let face = CubeFace::from(quad);
 
             let start_vertex = vertices.len() as u32;
             vertices.extend_from_slice(&face.vertices);
-            let offset_indices = QuadFace::INDICES.iter().map(|i| *i + start_vertex);
+            let offset_indices = CubeFace::INDICES.iter().map(|i| *i + start_vertex);
             indices.extend(offset_indices);
         }
 
@@ -157,9 +168,9 @@ impl ModelRegistry {
 
     fn push_circle(&mut self, resolution: u32) -> ModelData {
         let vertex = |x, y| Vertex {
-            position: [x, y, 0.0].into(),
+            position: [x, y, 0.0],
             tex_coord: [x + 0.5, y + 0.5],
-            normal: [0.0, 0.0, 1.0].into(),
+            normal: [0.0, 0.0, 1.0],
         };
 
         let mut vertices = Vec::with_capacity(resolution as usize);
@@ -208,31 +219,8 @@ impl ModelRegistry {
 
         let (width, height) = image.dimensions();
 
-        let real_width = width as f32 * VOXEL_SIZE;
-        let real_height = height as f32 * VOXEL_SIZE;
-        let real_depth = VOXEL_SIZE;
-
-        let offset_y = real_depth / 2.0;
-        let offset_z = real_height / 2.0;
-
         let mut vertices = Vec::new();
         let mut indices = Vec::new();
-
-        let front_quad = Quad {
-            size: [real_width, real_height].into(),
-            normal: [0.0, -1.0, 0.0].into(),
-            center: [0.0, -offset_y, offset_z].into(),
-            tex_start: [0.0, 0.0],
-            tex_end: [1.0, 1.0],
-        };
-
-        let back_quad = Quad {
-            size: front_quad.size,
-            normal: [0.0, 1.0, 0.0].into(),
-            center: [0.0, offset_y, offset_z].into(),
-            tex_start: [1.0, 0.0],
-            tex_end: [0.0, 1.0],
-        };
 
         let is_transparent = |col: i32, row: i32| {
             if col < 0 || col >= width as i32 || row < 0 || row >= height as i32 {
@@ -244,17 +232,14 @@ impl ModelRegistry {
         };
 
         let mut add_face = |quad: Quad| {
-            let face = QuadFace::from(quad);
+            let face = CubeFace::from(quad);
 
             let start_vertex = vertices.len() as u32;
             vertices.extend_from_slice(&face.vertices);
 
-            let offset_indices = QuadFace::INDICES.iter().map(|i| *i + start_vertex);
+            let offset_indices = CubeFace::INDICES.iter().map(|i| *i + start_vertex);
             indices.extend(offset_indices);
         };
-
-        add_face(front_quad);
-        add_face(back_quad);
 
         for col in 0..width {
             for row in 0..height {
@@ -287,6 +272,9 @@ impl ModelRegistry {
                             add_face(quad([dx as f32, 0.0, -dy as f32]));
                         }
                     }
+
+                    add_face(quad([0.0, 1.0, 0.0]));
+                    add_face(quad([0.0, -1.0, 0.0]));
                 }
             }
         }
@@ -310,7 +298,7 @@ impl ModelRegistry {
     }
 }
 
-struct QuadFace {
+struct CubeFace {
     vertices: [Vertex; 4],
 }
 
@@ -323,42 +311,42 @@ struct Quad {
     tex_end: [f32; 2],
 }
 
-impl From<Quad> for QuadFace {
-    fn from(quad: Quad) -> QuadFace {
+impl From<Quad> for CubeFace {
+    fn from(quad: Quad) -> CubeFace {
         let right = match Vector3::unit_z().cross(quad.normal) {
             product if product.is_zero() => Vector3::unit_y().cross(quad.normal),
             product => product,
         };
         let up = quad.normal.cross(right);
 
-        let right = right * quad.size.x;
-        let up = up * quad.size.y;
+        let delta_right = right * quad.size.x;
+        let delta_up = up * quad.size.y;
 
-        let bottom_left: Point3<f32> = quad.center - 0.5 * right - 0.5 * up;
+        let bottom_left: Point3<f32> = quad.center - 0.5 * delta_right - 0.5 * delta_up;
 
         let [u0, v0] = quad.tex_start;
         let [u1, v1] = quad.tex_end;
 
-        QuadFace {
+        CubeFace {
             vertices: [
                 Vertex {
-                    position: bottom_left,
-                    normal: quad.normal,
+                    position: bottom_left.into(),
+                    normal: quad.normal.into(),
                     tex_coord: [u0, v1],
                 },
                 Vertex {
-                    position: bottom_left + right,
-                    normal: quad.normal,
+                    position: (bottom_left + delta_right).into(),
+                    normal: quad.normal.into(),
                     tex_coord: [u1, v1],
                 },
                 Vertex {
-                    position: bottom_left + right + up,
-                    normal: quad.normal,
+                    position: (bottom_left + delta_right + delta_up).into(),
+                    normal: quad.normal.into(),
                     tex_coord: [u1, v0],
                 },
                 Vertex {
-                    position: bottom_left + up,
-                    normal: quad.normal,
+                    position: (bottom_left + delta_up).into(),
+                    normal: quad.normal.into(),
                     tex_coord: [u0, v0],
                 },
             ],
@@ -366,6 +354,6 @@ impl From<Quad> for QuadFace {
     }
 }
 
-impl QuadFace {
+impl CubeFace {
     const INDICES: [u32; 6] = [0, 1, 2, 2, 3, 0];
 }

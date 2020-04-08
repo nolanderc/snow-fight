@@ -1,10 +1,8 @@
 use cgmath::Vector3;
+
 use logic::components::Position;
 use logic::legion::prelude::*;
 use logic::resources::TimeStep;
-use logic::System;
-
-use crate::renderer::Camera;
 
 use std::f32::consts::PI;
 const TAU: f32 = 2.0 * PI;
@@ -21,34 +19,28 @@ pub struct Controller {
     distance_target: f32,
 }
 
-pub fn update() -> System {
-    SystemBuilder::new("update_camera")
-        .read_resource::<TimeStep>()
-        .write_resource::<Controller>()
-        .write_resource::<Camera>()
-        .read_component::<Position>()
-        .build(move |_, world, (dt, controller, camera), _| {
-            controller.apply_velocity(**dt);
+impl super::Game {
+    pub fn update_camera(&mut self) {
+        let dt = <Read<TimeStep>>::fetch(&self.world.resources);
+        self.controller.apply_velocity(*dt);
 
-            let focus = controller
-                .target
-                .and_then(|entity| world.get_component::<Position>(entity));
+        let direction = self.controller.direction();
+        let distance = self.controller.distance;
 
-            let direction = controller.direction();
-            let distance = controller.distance;
-
-            if let Some(focus) = focus {
+        if let Some(target) = self.controller.target {
+            if let Some(focus) = self.world.get_component::<Position>(target) {
                 let forward = Vector3::new(direction.x, direction.y, 0.0);
                 let offset = Vector3::new(0.0, 0.0, 0.5) - 0.5 * distance * forward;
 
                 let focus = **focus + offset;
-                let delta = focus - camera.focus;
+                let delta = focus - self.camera.focus;
                 let restore = 1.0 - 0.5f32.powf(dt.secs_f32() / 0.05);
-                camera.focus += restore * delta;
+                self.camera.focus += restore * delta;
             }
+        }
 
-            camera.position = camera.focus - distance * direction;
-        })
+        self.camera.position = self.camera.focus - distance * direction;
+    }
 }
 
 impl Controller {

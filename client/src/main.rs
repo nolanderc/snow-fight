@@ -155,7 +155,7 @@ fn dispatch_winit_event(
 }
 
 fn run(window: Window, events: mpsc::Receiver<Event>) -> Result<()> {
-    let mut game = Game::new(window)?;
+    let mut game = futures::executor::block_on(Game::new(window))?;
 
     while game.is_running() {
         while match events.try_recv() {

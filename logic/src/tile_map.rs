@@ -1,6 +1,5 @@
 use cgmath::{Point2, Point3, Vector3};
 use derive_more::{Deref, DerefMut, From};
-use legion::prelude::*;
 use std::collections::HashMap;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, From, Deref, DerefMut)]
@@ -12,7 +11,7 @@ pub struct TileMap {
 
 #[derive(Debug, Clone)]
 pub struct Tile {
-    pub slot: Option<Placed>,
+    pub slot: Option<Slot>,
     pub kind: TileKind,
 }
 
@@ -24,10 +23,7 @@ pub enum TileKind {
 }
 
 #[derive(Debug, Clone)]
-pub struct Placed {
-    pub entity: Entity,
-    pub durability: f32,
-}
+pub struct Slot {}
 
 impl Default for TileMap {
     fn default() -> Self {
@@ -85,6 +81,14 @@ impl From<[i32; 2]> for TileCoord {
 }
 
 impl TileCoord {
+    pub fn to_world(self) -> Point3<f32> {
+        Point3 {
+            x: self.x as f32,
+            y: self.y as f32,
+            z: 0.0,
+        }
+    }
+
     pub fn from_world(world: Point3<f32>) -> TileCoord {
         let x = world.x.round() as i32;
         let y = world.y.round() as i32;
