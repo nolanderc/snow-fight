@@ -63,7 +63,7 @@ impl ModelRegistry {
                 .push_image("assets/tree_poplar.png", device, encoder)
                 .context("failed to build model for image")?,
             Model::Player => self
-                .push_image("assets/player.png", device, encoder)
+                .push_image("assets/snowman.png", device, encoder)
                 .context("failed to build model for image")?,
             Model::Mushroom => self
                 .push_image("assets/mushroom.png", device, encoder)
@@ -278,15 +278,6 @@ impl ModelRegistry {
                 }
             }
         }
-
-        let n = indices.len();
-        eprintln!(
-            "{} vertices, {} indices ({} triangles or {} faces)",
-            vertices.len(),
-            n,
-            n / 3,
-            n / 6
-        );
 
         let range = self.add_vertices(&vertices, &indices);
         let texture = super::texture::from_image(&image, device, encoder);

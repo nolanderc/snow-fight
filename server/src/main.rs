@@ -21,6 +21,7 @@ mod options;
 use anyhow::Context;
 use protocol::RequestKind;
 use structopt::StructOpt;
+use tokio::task;
 
 use game::{Game, GameHandle, PlayerHandle};
 use message::{Connection, Listener};
@@ -37,8 +38,14 @@ async fn main() -> Result<()> {
 
     let (mut game, handle) = Game::new();
 
-    tokio::spawn(async move { game.run().await });
+    let local = task::LocalSet::new();
+    local.spawn_local(async move { game.run().await });
+    local.spawn_local(tokio::spawn(game_server(options, handle)));
+    local.await;
+    Ok(())
+}
 
+async fn game_server(options: &Options, handle: GameHandle) -> anyhow::Result<()> {
     loop {
         let server = Server::new(options, handle.clone()).await?;
         let error = server.run().await;

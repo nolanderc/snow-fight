@@ -1,7 +1,11 @@
 mod camera;
 mod render;
+mod network;
 
 use crate::renderer::{Camera, Renderer, RendererConfig, Size};
+
+use crate::message::Connection;
+
 use camera::Controller;
 use render::RenderOptions;
 
@@ -12,7 +16,6 @@ use cgmath::{Point2, Point3, Vector3};
 
 use logic::components::*;
 use logic::legion::prelude::*;
-use logic::tags;
 
 use std::f32::consts::PI;
 use std::sync::Arc;
@@ -29,6 +32,8 @@ use winit::{
 pub struct Game {
     world: World,
     executor: logic::Executor,
+
+    connection: Connection,
 
     fps_meter: FpsMeter,
 
@@ -103,20 +108,10 @@ mod qwerty {
 }
 
 impl Game {
-    pub async fn new(window: Window) -> Result<Game> {
+    pub async fn new(window: Window, connection: Connection) -> Result<Game> {
         let window = Arc::new(window);
 
-        let size = window.inner_size();
-
-        let renderer = Renderer::new(
-            &window,
-            RendererConfig {
-                width: size.width,
-                height: size.height,
-                samples: 1,
-            },
-        )
-        .await?;
+        let renderer = Self::create_renderer(&window).await?;
 
         let mut world = logic::create_world();
         let mut controller = Controller::new();
@@ -137,6 +132,8 @@ impl Game {
             world,
             executor,
 
+            connection,
+
             fps_meter: FpsMeter::new(),
 
             window: WindowState::new(window),
@@ -151,6 +148,19 @@ impl Game {
             player,
             selected: None,
         })
+    }
+
+    async fn create_renderer(window: &Window) -> Result<Renderer> {
+        let size = window.inner_size();
+        Renderer::new(
+            &window,
+            RendererConfig {
+                width: size.width,
+                height: size.height,
+                samples: 1,
+            },
+        )
+        .await
     }
 
     pub fn is_running(&self) -> bool {
@@ -203,6 +213,12 @@ impl Game {
             VirtualKeyCode::Tab => self.switch_closest(),
             VirtualKeyCode::F1 => {
                 self.render_options.render_bounds ^= true;
+            }
+            VirtualKeyCode::F5 => {
+                match futures::executor::block_on(Self::create_renderer(&self.window.handle)) {
+                    Ok(renderer) => self.renderer = renderer,
+                    Err(e) => eprintln!("failed to reload renderer: {:#}", e),
+                }
             }
             _ => {}
         }
@@ -259,30 +275,16 @@ impl Game {
     fn button_down(&mut self, button: MouseButton) {
         match button {
             MouseButton::Right => {
-                let held = self
-                    .world
-                    .get_component_mut::<WorldInteraction>(self.player)
-                    .unwrap()
-                    .holding
-                    .take();
+                let (origin, direction) = self.mouse_ray();
+                let target = match self.ray_pick_entity(origin, direction) {
+                    None => {
+                        let dt = -origin.z / direction.z;
+                        origin + dt * direction
+                    }
+                    Some((_, position)) => position,
+                };
 
-                if let Some(held) = held {
-                    let (origin, direction) = self.mouse_ray();
-                    let dt = -origin.z / direction.z;
-                    let floor = origin + dt * direction;
-
-                    let position = *self.world.get_component::<Position>(self.player).unwrap();
-                    let delta = floor - position.0;
-                    let direction = Vector3::new(delta.x, delta.y, 0.0).normalize();
-
-                    let velocity = Velocity(20.0 * direction);
-                    let collision_listener = CollisionListener::new();
-
-                    self.world.add_component(held, velocity);
-                    self.world.add_component(held, collision_listener);
-                    self.world.add_component(held, Projectile { damage: 1 });
-                    self.world.add_tag(held, tags::Moveable);
-                }
+                logic::events::throw(&mut self.world, self.player, target);
             }
 
             _ => {}
@@ -293,13 +295,17 @@ impl Game {
 
     fn cursor_moved(&mut self, _position: Point2<f32>) {}
 
-    pub fn tick(&mut self) {
+    pub fn tick(&mut self) -> Result<()> {
+        self.poll_connection()?;
+
         self.update_selected();
         self.update_breaking();
         self.executor.tick(&mut self.world);
         self.update_camera();
         self.render();
         self.update_fps();
+
+        Ok(())
     }
 
     fn update_fps(&mut self) {
@@ -351,10 +357,16 @@ impl Game {
 
     fn update_selected(&mut self) {
         let (origin, direction) = self.mouse_ray();
-        self.selected = self.ray_pick_entity(origin, direction);
+        self.selected = self
+            .ray_pick_entity(origin, direction)
+            .map(|(entity, _)| entity);
     }
 
-    fn ray_pick_entity(&self, origin: Point3<f32>, direction: Vector3<f32>) -> Option<Entity> {
+    fn ray_pick_entity(
+        &self,
+        origin: Point3<f32>,
+        direction: Vector3<f32>,
+    ) -> Option<(Entity, Point3<f32>)> {
         <(Read<Position>, Read<Collision>)>::query()
             .filter(component::<Breakable>())
             .iter_entities_immutable(&self.world)
@@ -373,7 +385,7 @@ impl Game {
                     .partial_cmp(&b_distance)
                     .unwrap_or(std::cmp::Ordering::Equal)
             })
-            .map(|(_, target)| target)
+            .map(|(distance, target)| (target, origin + distance * direction))
     }
 
     fn update_breaking(&mut self) {

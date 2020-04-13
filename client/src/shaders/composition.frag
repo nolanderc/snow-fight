@@ -19,7 +19,7 @@ layout(set = 0, binding = 4) uniform texture2D g_position;
 const float EDGE_DEPTH = 0.005;
 const float EDGE_NORMAL = 0.01;
 
-const float LIGHT_AMBIENT = 0.4;
+const float LIGHT_AMBIENT = 0.7;
 const float FOG_DISTANCE = 30.0;
 
 vec4 f_color;
@@ -92,7 +92,7 @@ float phong() {
     vec3 reflection = reflect(light_dir, f_normal);
     float specular = max(0, dot(reflection, -f_camera_dir));
 
-    return brightness + 0.4 * pow(specular, 4);
+    return brightness + 0.2 * specular;
 }
 
 void main() {

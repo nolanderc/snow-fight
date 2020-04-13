@@ -1,5 +1,3 @@
-mod world;
-
 use std::collections::BTreeMap;
 use std::fmt::{self, Debug, Formatter};
 use tokio::sync::{
@@ -8,12 +6,12 @@ use tokio::sync::{
 };
 use tokio::time;
 
+use logic::legion::prelude::World;
+
 use protocol::{
     Chat, Event, EventKind, Init, PlayerId, PlayerList, Request, RequestKind, Response,
     ResponseKind,
 };
-
-use world::World;
 
 /// How many times per second to update the game world.
 const TICK_RATE: u32 = 30;
@@ -26,6 +24,8 @@ pub struct Game {
     receiver: mpsc::Receiver<Command>,
 
     world: World,
+    executor: logic::Executor,
+
     time: u32,
 }
 
@@ -76,10 +76,14 @@ impl Game {
     pub fn new() -> (Game, GameHandle) {
         let (sender, receiver) = mpsc::channel(1024);
 
+        let world = logic::create_world();
+        let executor = logic::Executor::new(Default::default());
+
         let game = Game {
             players: BTreeMap::new(),
             receiver,
-            world: World {},
+            world,
+            executor,
             time: 0,
         };
 
@@ -95,7 +99,6 @@ impl Game {
         loop {
             tokio::select! {
                 _ = timer.tick() => {
-                    log::trace!("tick");
                     self.tick();
                 }
                 command = self.receiver.recv() => match command {
@@ -113,6 +116,8 @@ impl Game {
     }
 
     fn tick(&mut self) {
+        self.executor.tick(&mut self.world);
+
         let events = Vec::<EventKind>::new();
 
         for event in events {

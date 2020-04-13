@@ -1,6 +1,7 @@
 pub extern crate legion;
 
 pub mod components;
+pub mod events;
 pub mod resources;
 pub mod systems;
 pub mod tags;
@@ -20,7 +21,7 @@ use std::time::{Duration, Instant};
 
 use crate::components::{Model, Position};
 use crate::resources::TimeStep;
-use crate::tags::{Moveable, Player};
+use crate::tags::Player;
 use crate::tile_map::{Tile, TileCoord, TileKind, TileMap};
 
 pub type System = Box<dyn Schedulable>;
@@ -85,6 +86,8 @@ pub fn create_world() -> World {
     spawn_objects(&mut world, &mut map);
     world.resources.insert(map);
 
+    world.defrag(None);
+
     world
 }
 
@@ -92,6 +95,7 @@ pub fn create_world() -> World {
 pub fn add_systems(builder: ScheduleBuilder) -> ScheduleBuilder {
     builder
         .add_system(systems::movement::system())
+        .add_system(systems::acceleration::system())
         .add_system(systems::tile_interaction::system())
         .add_system(systems::collision::continuous_system())
         .add_system(systems::collision::discrete_system())
@@ -99,11 +103,14 @@ pub fn add_systems(builder: ScheduleBuilder) -> ScheduleBuilder {
 }
 
 pub fn add_player(world: &mut World) -> Entity {
-    let tags = (Player, Moveable);
+    let tags = (Player,);
+
+    let width = 14.0;
+    let height = 21.0;
 
     let bounds = collision::AlignedBox::centered(
-        [0.0, 0.0, 8.0 * VOXEL_SIZE].into(),
-        [14.0 * VOXEL_SIZE, 3.0 * VOXEL_SIZE, 16.0 * VOXEL_SIZE].into(),
+        [0.0, 0.0, 0.5 * height * VOXEL_SIZE].into(),
+        [width * VOXEL_SIZE, 3.0 * VOXEL_SIZE, height * VOXEL_SIZE].into(),
     );
 
     let components = (
@@ -187,7 +194,7 @@ fn spawn_objects(world: &mut World, map: &mut TileMap) {
             ));
         }
 
-        world.insert((), components);
+        world.insert((tags::Static,), components);
     };
 
     spawn(TREES, Model::Tree, [14, 3, 30]);
@@ -198,6 +205,20 @@ fn spawn_objects(world: &mut World, map: &mut TileMap) {
             spawn_invisible_wall(world, pos);
         }
     }
+
+    let size = SIZE as f32;
+    let floor = (
+        Position([0.0; 3].into()),
+        components::Collision {
+            bounds: collision::AlignedBox::centered(
+                [0.0, 0.0, -size].into(),
+                [2.0 * size; 3].into(),
+            ),
+            ignored: None,
+        },
+    );
+
+    world.insert((), Some(floor));
 }
 
 fn spawn_invisible_wall(world: &mut World, tile: TileCoord) {
@@ -209,5 +230,5 @@ fn spawn_invisible_wall(world: &mut World, tile: TileCoord) {
 
     let components = (position, collision);
 
-    world.insert((), Some(components));
+    world.insert((tags::Static,), Some(components));
 }

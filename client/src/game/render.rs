@@ -20,7 +20,7 @@ impl Default for RenderOptions {
 }
 
 impl super::Game {
-    pub fn render(&mut self) {
+    pub(super) fn render(&mut self) {
         let mut frame = self.renderer.next_frame(self.camera);
 
         self.render_ground(&mut frame);

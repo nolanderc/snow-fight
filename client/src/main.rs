@@ -41,8 +41,10 @@ fn main() -> Result<()> {
     let window = Window::new(&event_loop)?;
     let (mut event_tx, event_rx) = mpsc::channel();
 
+    let connection = connect(options)?;
+
     thread::spawn(move || {
-        if let Err(e) = run(window, event_rx).context("game loop exited") {
+        if let Err(e) = run(window, event_rx, connection).context("game loop exited") {
             log::error!("{:?}", e);
         }
     });
@@ -60,13 +62,17 @@ fn main() -> Result<()> {
 
 /// Setup logging facilities.
 fn setup_logger(options: &Options) {
-    env_logger::Builder::new()
-        .filter_level(options.log_level)
-        .init();
+    let mut builder = env_logger::Builder::new();
+    builder.filter_level(log::LevelFilter::Info);
+
+    for filter in &options.log_level {
+        builder.filter(filter.module.as_deref(), filter.level);
+    }
+
+    builder.init();
 }
 
 /// Connect to the server.
-#[allow(dead_code)]
 fn connect(options: &Options) -> Result<Connection> {
     log::info!(
         "Connecting to server on [{}:{}]...",
@@ -85,6 +91,29 @@ fn connect(options: &Options) -> Result<Connection> {
     Ok(connection)
 }
 
+/// Run the game logic and graphics frontend.
+fn run(window: Window, events: mpsc::Receiver<Event>, connection: Connection) -> Result<()> {
+    let mut game = futures::executor::block_on(Game::new(window, connection))?;
+
+    while game.is_running() {
+        while match events.try_recv() {
+            Err(mpsc::TryRecvError::Empty) => false,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                return Err(anyhow!("event loop disconnected"))
+            }
+            Ok(event) => {
+                game.handle_event(event);
+                true
+            }
+        } {}
+
+        game.tick()?;
+    }
+
+    Ok(())
+}
+
+/// Convert a window event to a game input event and send it along the channel.
 fn dispatch_winit_event(
     event: WinitEvent<()>,
     events: &mut mpsc::Sender<Event>,
@@ -152,25 +181,4 @@ fn dispatch_winit_event(
     }
 
     Ok(ControlFlow::Wait)
-}
-
-fn run(window: Window, events: mpsc::Receiver<Event>) -> Result<()> {
-    let mut game = futures::executor::block_on(Game::new(window))?;
-
-    while game.is_running() {
-        while match events.try_recv() {
-            Err(mpsc::TryRecvError::Empty) => false,
-            Err(mpsc::TryRecvError::Disconnected) => {
-                return Err(anyhow!("event loop disconnected"))
-            }
-            Ok(event) => {
-                game.handle_event(event);
-                true
-            }
-        } {}
-
-        game.tick();
-    }
-
-    Ok(())
 }

@@ -16,6 +16,9 @@ pub struct Position(pub Point3<f32>);
 #[derive(Debug, Copy, Clone, Deref, DerefMut)]
 pub struct Velocity(pub Vector3<f32>);
 
+#[derive(Debug, Copy, Clone, Deref, DerefMut)]
+pub struct Acceleration(pub Vector3<f32>);
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum Model {
     Rect,
@@ -89,12 +92,6 @@ impl Default for Breakable {
 }
 
 #[derive(Debug, Clone)]
-pub struct Collision {
-    pub bounds: collision::AlignedBox,
-    pub ignored: Option<Entity>,
-}
-
-#[derive(Debug, Clone)]
 pub struct Health {
     pub max_points: u32,
     pub points: u32,
@@ -112,6 +109,12 @@ impl Health {
 #[derive(Debug, Clone)]
 pub struct Projectile {
     pub damage: u32,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct Collision {
+    pub bounds: collision::AlignedBox,
+    pub ignored: Option<Entity>,
 }
 
 #[derive(Debug, Default)]
