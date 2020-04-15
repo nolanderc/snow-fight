@@ -2,6 +2,9 @@ mod vlq;
 
 use crate::{read::Error as _, PackBits, ReadBits, UnpackBits, WriteBits};
 
+use std::rc::Rc;
+use std::sync::Arc;
+
 impl PackBits for bool {
     fn pack<W>(&self, writer: &mut W) -> Result<(), W::Error>
     where
@@ -222,26 +225,59 @@ impl UnpackBits for String {
     }
 }
 
-impl<T> PackBits for Box<T>
-where
-    T: PackBits,
-{
-    fn pack<W>(&self, writer: &mut W) -> Result<(), W::Error>
-    where
-        W: WriteBits,
-    {
-        self.as_ref().pack(writer)
-    }
+macro_rules! impl_wrapper {
+    ($wrapper:ident) => {
+        impl<T> PackBits for $wrapper<T>
+        where
+            T: PackBits,
+        {
+            fn pack<W>(&self, writer: &mut W) -> Result<(), W::Error>
+            where
+                W: WriteBits,
+            {
+                self.as_ref().pack(writer)
+            }
+        }
+
+        impl<T> UnpackBits for $wrapper<T>
+        where
+            T: UnpackBits,
+        {
+            fn unpack<R>(reader: &mut R) -> Result<Self, R::Error>
+            where
+                R: ReadBits,
+            {
+                T::unpack(reader).map($wrapper::new)
+            }
+        }
+    };
 }
 
-impl<T> UnpackBits for Box<T>
-where
-    T: UnpackBits,
-{
-    fn unpack<R>(reader: &mut R) -> Result<Self, R::Error>
-    where
-        R: ReadBits,
-    {
-        T::unpack(reader).map(Box::new)
-    }
+impl_wrapper!(Box);
+impl_wrapper!(Arc);
+impl_wrapper!(Rc);
+
+macro_rules! impl_bit_packing_tuple {
+    ($($ident:ident),+) => {
+        impl<$($ident: PackBits),*> PackBits for ($($ident,)*) {
+            #[allow(non_snake_case)]
+            fn pack<W: WriteBits>(&self, writer: &mut W) -> Result<(), W::Error> {
+                let ($($ident,)*) = self;
+                $( $ident.pack(writer)?;)*
+                Ok(())
+            }
+        }
+
+        impl<$($ident: UnpackBits),*> UnpackBits for ($($ident,)*) {
+            fn unpack<R: ReadBits>(reader: &mut R) -> Result<Self, R::Error> {
+                Ok(($( $ident::unpack(reader)? ,)*))
+            }
+        }
+    };
 }
+
+impl_bit_packing_tuple!(A);
+impl_bit_packing_tuple!(A, B);
+impl_bit_packing_tuple!(A, B, C);
+impl_bit_packing_tuple!(A, B, C, D);
+impl_bit_packing_tuple!(A, B, C, D, E);

@@ -17,7 +17,7 @@ pub struct Options {
     pub port: u16,
 
     /// The verbosity level of the logger.
-    #[structopt(long, default_value = "info")]
+    #[structopt(long, default_value = "warn")]
     pub log_level: Vec<LogFilter>,
 }
 

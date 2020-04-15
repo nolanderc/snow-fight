@@ -1,23 +1,27 @@
 use std::collections::BTreeMap;
 use std::fmt::{self, Debug, Formatter};
+use std::sync::Arc;
 use tokio::sync::{
     mpsc::{self, error::TrySendError},
     oneshot,
 };
 use tokio::time;
 
-use logic::legion::prelude::World;
+use logic::components::{Movement, WorldInteraction};
+use logic::legion::prelude::{Entity, World};
+use logic::resources::DeadEntities;
+use logic::snapshot::SnapshotEncoder;
 
 use protocol::{
-    Chat, Event, EventKind, Init, PlayerId, PlayerList, Request, RequestKind, Response,
-    ResponseKind,
+    Action, ActionKind, Chat, EntityId, Event, EventKind, GameOver, Init, PlayerId, PlayerList,
+    Request, RequestKind, Response, ResponseKind, Snapshot,
 };
 
 /// How many times per second to update the game world.
-const TICK_RATE: u32 = 30;
+const TICK_RATE: u32 = 60;
 
 /// The maximum number of events to buffer per player.
-const EVENT_BUFFER_SIZE: usize = 128;
+const EVENT_BUFFER_SIZE: usize = 1024;
 
 pub struct Game {
     players: BTreeMap<PlayerId, PlayerData>,
@@ -25,6 +29,7 @@ pub struct Game {
 
     world: World,
     executor: logic::Executor,
+    snapshots: SnapshotEncoder,
 
     time: u32,
 }
@@ -32,6 +37,8 @@ pub struct Game {
 #[derive(Debug, Clone)]
 struct PlayerData {
     name: String,
+    entity: Entity,
+    network_id: EntityId,
     events: mpsc::Sender<Event>,
 }
 
@@ -58,6 +65,13 @@ enum Command {
         callback: Callback<PlayerHandle>,
     },
     DisconnectPlayer(PlayerId),
+    Snapshot {
+        callback: Callback<Snapshot>,
+    },
+    PerformAction {
+        action: Action,
+        player: PlayerId,
+    },
 }
 
 struct Callback<T> {
@@ -76,14 +90,16 @@ impl Game {
     pub fn new() -> (Game, GameHandle) {
         let (sender, receiver) = mpsc::channel(1024);
 
-        let world = logic::create_world();
-        let executor = logic::Executor::new(Default::default());
+        let world = logic::create_world(logic::WorldKind::WithObjects);
+        let schedule = logic::add_systems(Default::default(), logic::SystemSet::Everything);
+        let executor = logic::Executor::new(schedule);
 
         let game = Game {
             players: BTreeMap::new(),
             receiver,
             world,
             executor,
+            snapshots: SnapshotEncoder::new(),
             time: 0,
         };
 
@@ -117,8 +133,12 @@ impl Game {
 
     fn tick(&mut self) {
         self.executor.tick(&mut self.world);
+        self.snapshots.update_mapping(&self.world);
+        self.check_win_condition();
 
-        let events = Vec::<EventKind>::new();
+        let mut events = Vec::<EventKind>::new();
+        let snapshot = Arc::new(self.snapshot());
+        events.push(snapshot.into());
 
         for event in events {
             self.broadcast(event);
@@ -136,18 +156,70 @@ impl Game {
             kind: kind.into(),
         };
 
-        for (id, player) in &mut self.players {
+        let mut dead = Vec::new();
+        for (&id, player) in &mut self.players {
             match player.events.try_send(event.clone()) {
                 Ok(()) => {}
                 Err(TrySendError::Full(_)) => {
                     log::warn!("player {}'s event buffer is full", id);
+                    dead.push(id);
                     // TODO: request full client resync
                 }
                 Err(TrySendError::Closed(_)) => {
                     log::info!("player {} stopped listening for events", id);
+                    dead.push(id);
                     // TODO: stop attempting to send events to this player, and potentially
                     // disconnect them.
                 }
+            }
+        }
+
+        for player in dead {
+            self.remove_player(player);
+        }
+    }
+
+    fn remove_player(&mut self, player: PlayerId) -> Option<PlayerData> {
+        let data = self.players.remove(&player)?;
+        self.world.delete(data.entity);
+        self.world
+            .resources
+            .get_mut::<DeadEntities>()
+            .unwrap()
+            .entities
+            .push(data.network_id);
+        Some(data)
+    }
+
+    /// Check if any player has won or lost.
+    fn check_win_condition(&mut self) {
+        let dead = self.world.resources.get::<DeadEntities>().unwrap();
+
+        let mut losers = Vec::new();
+        for (&player, data) in &self.players {
+            if dead.entities.contains(&data.network_id) {
+                losers.push(player);
+            }
+        }
+
+        drop(dead);
+
+        for loser in losers {
+            let mut player = self.players.remove(&loser).unwrap();
+            let event = Event {
+                time: self.time,
+                kind: EventKind::GameOver(GameOver::Loser),
+            };
+            tokio::spawn(async move { player.events.send(event).await });
+
+            if self.players.len() == 1 {
+                let winner = *self.players.keys().next().unwrap();
+                let mut player = self.remove_player(winner).unwrap();
+                let event = Event {
+                    time: self.time,
+                    kind: EventKind::GameOver(GameOver::Winner),
+                };
+                tokio::spawn(async move { player.events.send(event).await });
             }
         }
     }
@@ -159,7 +231,7 @@ impl Game {
                 callback.send(self.register_player(init));
             }
             Command::DisconnectPlayer(player) => {
-                self.players.remove(&player);
+                self.remove_player(player);
             }
             Command::Request {
                 callback,
@@ -169,17 +241,27 @@ impl Game {
                 let message = self.handle_request(request, player);
                 callback.send(message);
             }
+            Command::Snapshot { callback } => {
+                let snapshot = self.snapshot();
+                callback.send(snapshot);
+            }
+            Command::PerformAction { action, player } => self.perform_action(action, player),
         }
     }
 
     /// Create and register a new player
     fn register_player(&mut self, init: Init) -> PlayerHandle {
         let player = self.next_player_id();
+        let entity = logic::add_player(&mut self.world, player);
 
         let (sender, receiver) = mpsc::channel(EVENT_BUFFER_SIZE);
 
+        let network_id = *self.world.get_component::<EntityId>(entity).unwrap();
+
         let data = PlayerData {
             name: init.nickname,
+            network_id,
+            entity,
             events: sender,
         };
 
@@ -208,7 +290,8 @@ impl Game {
 
     /// Perform the request and return the result in a message
     fn handle_request(&mut self, request: Request, player: PlayerId) -> Response {
-        let response = match request.kind {
+        let kind = match request.kind {
+            RequestKind::Ping(_) => protocol::Pong.into(),
             RequestKind::Init(_) => {
                 let error = "Requested 'Init' on already initialized player";
                 ResponseKind::Error(error.into())
@@ -225,7 +308,7 @@ impl Game {
 
         Response {
             channel: request.channel,
-            kind: response,
+            kind,
         }
     }
 
@@ -233,6 +316,42 @@ impl Game {
     fn list_players(&self) -> ResponseKind {
         let players = self.players.keys().copied().collect();
         PlayerList { players }.into()
+    }
+
+    /// Get a snapshot of the current game state.
+    fn snapshot(&self) -> Snapshot {
+        self.snapshots.make_snapshot(&self.world)
+    }
+
+    /// Perform an action for a player.
+    fn perform_action(&mut self, action: Action, player: PlayerId) {
+        match action.kind {
+            ActionKind::Move(new) => {
+                || -> Option<()> {
+                    let data = self.players.get(&player)?;
+                    let mut movement = self.world.get_component_mut::<Movement>(data.entity)?;
+                    movement.direction = new.direction;
+                    Some(())
+                }();
+            }
+            ActionKind::Break(breaking) => {
+                || -> Option<()> {
+                    let data = self.players.get(&player)?;
+                    let breaking = breaking
+                        .entity
+                        .and_then(|breaking| self.snapshots.lookup(breaking));
+                    self.world
+                        .get_component_mut::<WorldInteraction>(data.entity)?
+                        .breaking = breaking;
+                    Some(())
+                }();
+            }
+            ActionKind::Throw(throwing) => {
+                if let Some(data) = self.players.get(&player) {
+                    logic::events::throw(&mut self.world, data.entity, throwing.target);
+                }
+            }
+        }
     }
 }
 
@@ -261,6 +380,20 @@ impl GameHandle {
             callback,
         })
         .await
+    }
+
+    /// Get a snapshot of the current game state.
+    pub async fn snapshot(&mut self) -> crate::Result<Snapshot> {
+        self.send_with(|callback| Command::Snapshot { callback })
+            .await
+    }
+
+    /// Handle an action performed by a player
+    pub async fn handle_action(&mut self, action: Action, player: PlayerId) -> crate::Result<()> {
+        self.sender
+            .send(Command::PerformAction { action, player })
+            .await?;
+        Ok(())
     }
 
     /// Send a command to the game with the specified callback and then return the value passed into

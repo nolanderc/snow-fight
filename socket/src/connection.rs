@@ -3,6 +3,7 @@
 use futures::stream::StreamExt;
 use rand::Rng;
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use thiserror::Error;
 use tokio::sync::mpsc;
 use tokio::task;
@@ -49,11 +50,13 @@ pub enum Error {
 }
 
 pub(crate) struct ConnectionEnv {
+    pub(crate) peer_addr: SocketAddr,
     pub(crate) packet_rx: mpsc::Receiver<RawPacket>,
     pub(crate) packet_tx: mpsc::Sender<RawPacket>,
 }
 
 pub struct Connection {
+    peer_addr: SocketAddr,
     payload_rx: mpsc::Receiver<IncomingPayload>,
     payload_tx: mpsc::Sender<OutgoingPayload>,
     driver: task::JoinHandle<Result<()>>,
@@ -161,6 +164,10 @@ impl Connection {
         Ok(Self::spawn(env))
     }
 
+    pub fn peer_addr(&self) -> SocketAddr {
+        self.peer_addr
+    }
+
     /// Send a payload.
     pub async fn send(&mut self, bytes: Vec<u8>, delivery: Delivery) -> Result<()> {
         let needs_ack = match delivery {
@@ -224,6 +231,7 @@ impl Connection {
         let driver = tokio::spawn(responder.handle_packets());
 
         Connection {
+            peer_addr: env.peer_addr,
             payload_tx: outgoing_tx,
             payload_rx: incoming_rx,
             driver,
@@ -363,15 +371,17 @@ mod serialize {
 }
 
 impl ConnectionEnv {
-    pub fn pair(cap: usize) -> (Self, Self) {
+    pub fn pair(cap: usize, peer_addr: SocketAddr) -> (Self, Self) {
         let (a_tx, b_rx) = mpsc::channel(cap);
         let (b_tx, a_rx) = mpsc::channel(cap);
 
         let a = ConnectionEnv {
+            peer_addr,
             packet_tx: a_tx,
             packet_rx: a_rx,
         };
         let b = ConnectionEnv {
+            peer_addr,
             packet_tx: b_tx,
             packet_rx: b_rx,
         };

@@ -1,6 +1,6 @@
 mod camera;
-mod render;
 mod network;
+mod render;
 
 use crate::renderer::{Camera, Renderer, RendererConfig, Size};
 
@@ -16,6 +16,9 @@ use cgmath::{Point2, Point3, Vector3};
 
 use logic::components::*;
 use logic::legion::prelude::*;
+use logic::snapshot::{RestoreConfig, SnapshotEncoder};
+
+use protocol::{Action, ActionKind, Break, EntityId, GameOver, Init, Move, PlayerId, Throw};
 
 use std::f32::consts::PI;
 use std::sync::Arc;
@@ -34,6 +37,7 @@ pub struct Game {
     executor: logic::Executor,
 
     connection: Connection,
+    snapshots: SnapshotEncoder,
 
     fps_meter: FpsMeter,
 
@@ -46,8 +50,16 @@ pub struct Game {
 
     should_exit: bool,
 
-    player: Entity,
+    player: LocalPlayer,
     selected: Option<Entity>,
+
+    game_over: Option<GameOver>,
+}
+
+struct LocalPlayer {
+    entity: Entity,
+    #[allow(dead_code)]
+    id: PlayerId,
 }
 
 struct FpsMeter {
@@ -108,19 +120,21 @@ mod qwerty {
 }
 
 impl Game {
-    pub async fn new(window: Window, connection: Connection) -> Result<Game> {
+    pub async fn new(window: Window, mut connection: Connection) -> Result<Game> {
         let window = Arc::new(window);
 
         let renderer = Self::create_renderer(&window).await?;
 
-        let mut world = logic::create_world();
-        let mut controller = Controller::new();
+        let mut world = logic::create_world(logic::WorldKind::Plain);
 
-        let schedule = logic::add_systems(Default::default());
+        let schedule = logic::add_systems(Default::default(), logic::SystemSet::NonDestructive);
         let executor = logic::Executor::new(schedule);
 
-        let player = logic::add_player(&mut world);
-        controller.target = Some(player);
+        let mut snapshots = SnapshotEncoder::new();
+        let player = Self::init(&mut world, &mut connection, &mut snapshots)?;
+
+        let mut controller = Controller::new();
+        controller.target = Some(player.entity);
 
         let camera = Camera {
             position: [0.0, -5.0, 2.0].into(),
@@ -133,6 +147,7 @@ impl Game {
             executor,
 
             connection,
+            snapshots,
 
             fps_meter: FpsMeter::new(),
 
@@ -147,6 +162,35 @@ impl Game {
 
             player,
             selected: None,
+
+            game_over: None,
+        })
+    }
+
+    fn init(
+        world: &mut World,
+        connection: &mut Connection,
+        snapshots: &mut SnapshotEncoder,
+    ) -> Result<LocalPlayer> {
+        let init = connection
+            .request(Init {
+                nickname: "Something".into(),
+            })
+            .wait()?;
+
+        let config = RestoreConfig {
+            active_player: None,
+        };
+        snapshots.restore_snapshot(world, &init.snapshot, &config);
+
+        let (entity, _) = <Read<Owner>>::query()
+            .iter_entities(world)
+            .find(|(_, owner)| owner.0 == init.player_id)
+            .ok_or_else(|| anyhow!("player {} not included in snapshot", init.player_id))?;
+
+        Ok(LocalPlayer {
+            entity,
+            id: init.player_id,
         })
     }
 
@@ -225,7 +269,7 @@ impl Game {
 
         let set_direction = |game: &mut Game, direction| {
             game.world
-                .get_component_mut::<Movement>(game.player)
+                .get_component_mut::<Movement>(game.player.entity)
                 .unwrap()
                 .direction
                 .insert(direction)
@@ -256,7 +300,7 @@ impl Game {
 
         let reset_direction = |game: &mut Game, direction| {
             game.world
-                .get_component_mut::<Movement>(game.player)
+                .get_component_mut::<Movement>(game.player.entity)
                 .unwrap()
                 .direction
                 .remove(direction)
@@ -284,7 +328,10 @@ impl Game {
                     Some((_, position)) => position,
                 };
 
-                logic::events::throw(&mut self.world, self.player, target);
+                logic::events::throw(&mut self.world, self.player.entity, target);
+                self.connection.send_action(Action {
+                    kind: ActionKind::Throw(Throw { target }),
+                });
             }
 
             _ => {}
@@ -295,17 +342,25 @@ impl Game {
 
     fn cursor_moved(&mut self, _position: Point2<f32>) {}
 
-    pub fn tick(&mut self) -> Result<()> {
-        self.poll_connection()?;
+    pub fn tick(&mut self) -> Result<Option<GameOver>> {
+        if let Some(game_over) = self.poll_connection()? {
+            return Ok(Some(game_over));
+        }
 
-        self.update_selected();
-        self.update_breaking();
-        self.executor.tick(&mut self.world);
-        self.update_camera();
+        if self.game_over.is_none() {
+            self.update_selected();
+            self.update_breaking();
+
+            self.send_actions();
+
+            self.executor.tick(&mut self.world);
+            self.update_camera();
+        }
+
         self.render();
         self.update_fps();
 
-        Ok(())
+        Ok(None)
     }
 
     fn update_fps(&mut self) {
@@ -368,7 +423,6 @@ impl Game {
         direction: Vector3<f32>,
     ) -> Option<(Entity, Point3<f32>)> {
         <(Read<Position>, Read<Collision>)>::query()
-            .filter(component::<Breakable>())
             .iter_entities_immutable(&self.world)
             .filter_map(|(entity, (position, collision))| {
                 let bounds = collision.bounds.translate(position.0.to_vec());
@@ -392,9 +446,32 @@ impl Game {
         let is_breaking = self.window.button_down(MouseButton::Left);
 
         self.world
-            .get_component_mut::<WorldInteraction>(self.player)
+            .get_component_mut::<WorldInteraction>(self.player.entity)
             .unwrap()
             .breaking = if is_breaking { self.selected } else { None };
+    }
+
+    fn send_actions(&mut self) {
+        let direction = self
+            .world
+            .get_component::<Movement>(self.player.entity)
+            .unwrap()
+            .direction;
+        self.connection.send_action(Action {
+            kind: Move { direction }.into(),
+        });
+
+        let interaction = self
+            .world
+            .get_component::<WorldInteraction>(self.player.entity)
+            .unwrap();
+        let breaking = interaction
+            .breaking
+            .and_then(|target| self.world.get_component::<EntityId>(target))
+            .map(|breaking| *breaking);
+        self.connection.send_action(Action {
+            kind: Break { entity: breaking }.into(),
+        });
     }
 
     fn mouse_ray(&self) -> (Point3<f32>, Vector3<f32>) {

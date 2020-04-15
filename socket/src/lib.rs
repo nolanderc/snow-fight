@@ -17,7 +17,7 @@ pub use crate::connection::*;
 use crate::error::{Error, Result};
 
 /// The percentage of artificial packet loss to add (for testing purposes).
-const PACKET_LOSS: f64 = 0.01;
+const PACKET_LOSS: f64 = 0.0;
 
 /// The amount of time a client has to establish a connection, measured from the moment the first
 /// packet arrives.
@@ -39,10 +39,7 @@ struct ConnectionStore {
 
 impl Connection {
     /// Connect to a remote address and bind to a random local one.
-    pub async fn connect<T>(remote_addr: T) -> Result<Connection>
-    where
-        T: ToSocketAddrs,
-    {
+    pub async fn connect(remote_addr: SocketAddr) -> Result<Connection> {
         let local_addr = (Ipv4Addr::new(0, 0, 0, 0), 0);
         let socket = UdpSocket::bind(local_addr).await?;
         socket.connect(remote_addr).await?;
@@ -55,6 +52,7 @@ impl Connection {
         tokio::spawn(Self::recv_packets(receiver, incoming));
 
         let env = ConnectionEnv {
+            peer_addr: remote_addr,
             packet_rx,
             packet_tx,
         };
@@ -189,7 +187,7 @@ impl ConnectionStore {
         } = self;
 
         let conn = connections.entry(addr).or_insert_with(|| {
-            let (a, b) = ConnectionEnv::pair(16);
+            let (a, b) = ConnectionEnv::pair(16, addr);
 
             tokio::spawn(Self::accept_connection(b, listener.clone()));
 

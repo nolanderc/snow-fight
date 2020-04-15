@@ -53,35 +53,43 @@ pub fn continuous_system() -> System {
 
 /// Move entities out collisions
 pub fn discrete_system() -> System {
-    let colliders = <(Read<Position>, Read<Collision>)>::query();
+    let obstacles = <(Read<Position>, Read<Collision>)>::query();
     let dynamic = <(Write<Position>, Read<Collision>)>::query().filter(!tag::<Static>());
 
     SystemBuilder::new("discrete_collision")
-        .with_query(colliders)
+        .with_query(obstacles)
         .with_query(dynamic)
         .build(move |_, world, (), queries| {
-            let (colliders, dynamic) = queries;
+            let (obstacles, dynamic) = queries;
 
-            let bounding_boxes = colliders
+            let collision_boxes = obstacles
                 .iter_entities(world)
                 .map(|(entity, (position, collider))| (entity, bounding_box(*position, *collider)))
                 .collect::<Vec<_>>();
 
-            for (entity, (mut position, collider)) in dynamic.iter_entities(world) {
-                let mut iterations = 0;
-                loop {
-                    let bounds = bounding_box(*position, *collider);
-                    match largest_overlap(entity, bounds, &bounding_boxes) {
-                        None => break,
-                        Some((_other, overlap)) => {
-                            position.0 += overlap.resolution;
-                            iterations += 1;
+            let dynamic = dynamic.iter_entities(world).collect::<Vec<_>>();
+            let dynamic_entities = dynamic
+                .iter()
+                .map(|(entity, _)| *entity)
+                .collect::<Vec<_>>();
 
-                            if iterations > 11 {
-                                break;
-                            }
-                        }
+            for (entity, (mut position, collider)) in dynamic {
+                let bounds = bounding_box(*position, *collider);
+                let mut count = 0;
+                let mut sum = Vector3::zero();
+
+                for (other, overlap) in overlaps(entity, bounds, &collision_boxes) {
+                    count += 1;
+                    if dynamic_entities.contains(&other) {
+                        sum += 0.5 * overlap.resolution;
+                    } else {
+                        sum += overlap.resolution;
                     }
+                }
+
+                if count > 0 {
+                    let average = sum / count as f32;
+                    position.0 += average;
                 }
             }
         })
@@ -103,19 +111,18 @@ fn first_collision(
         .min_by(|(_, a_hit), (_, b_hit)| a_hit.entry.partial_cmp(&b_hit.entry).unwrap())
 }
 
-fn largest_overlap(
+fn overlaps<'a>(
     entity: Entity,
     collision: Collision,
-    colliders: &[(Entity, Collision)],
-) -> Option<(Entity, Overlap)> {
+    colliders: &'a [(Entity, Collision)],
+) -> impl Iterator<Item = (Entity, Overlap)> + 'a {
     colliders
         .iter()
         .filter(may_collide_with(entity, collision))
-        .filter_map(|&(other, collider)| {
+        .filter_map(move |&(other, collider)| {
             let overlap = collision.bounds.overlap(collider.bounds)?;
             Some((other, overlap))
         })
-        .max_by(|(_, a), (_, b)| a.volume.partial_cmp(&b.volume).unwrap())
 }
 
 fn may_collide_with(entity: Entity, collider: Collision) -> impl Fn(&&(Entity, Collision)) -> bool {

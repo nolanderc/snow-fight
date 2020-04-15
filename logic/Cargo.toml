@@ -12,3 +12,5 @@ cgmath = "0.17.0"
 rand = "0.7.3"
 derive_more = "0.99.3"
 bitflags = "1.2.1"
+protocol = { path = "../protocol" }
+log = "0.4.8"

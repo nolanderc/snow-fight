@@ -3,18 +3,24 @@
 //!
 //! Contains common data structures for the protocol implementation.
 
+mod packers;
+
+pub mod action;
 pub mod event;
 pub mod request;
 pub mod response;
+pub mod snapshot;
 
+pub use action::*;
 pub use event::*;
 pub use request::*;
 pub use response::*;
+pub use snapshot::*;
 
-pub use rabbit::{to_bytes, from_bytes};
+pub use rabbit::{from_bytes, to_bytes};
 
-use rabbit::{PackBits, UnpackBits};
 use derive_more::From;
+use rabbit::{PackBits, UnpackBits};
 use std::fmt::{self, Display, Formatter};
 
 /// A unique identifier for a player.
@@ -23,9 +29,16 @@ pub struct PlayerId(pub u32);
 
 /// Top-level data that can be sent from the server to the client.
 #[derive(Debug, Clone, PackBits, UnpackBits)]
-pub enum Message {
+pub enum ServerMessage {
     Event(Event),
     Response(Response),
+}
+
+/// Top-level data that can be sent from the client to the server
+#[derive(Debug, Clone, PackBits, UnpackBits)]
+pub enum ClientMessage {
+    Request(Request),
+    Action(Action),
 }
 
 /// The id of a channel in which requests and responses are sent.
@@ -44,11 +57,20 @@ impl Display for PlayerId {
     }
 }
 
-impl Message {
+impl ServerMessage {
     pub fn must_arrive(&self) -> bool {
         match self {
-            Message::Event(event) => event.must_arrive(),
-            Message::Response(response) => response.must_arrive(),
+            ServerMessage::Event(event) => event.must_arrive(),
+            ServerMessage::Response(response) => response.must_arrive(),
+        }
+    }
+}
+
+impl ClientMessage {
+    pub fn must_arrive(&self) -> bool {
+        match self {
+            ClientMessage::Request(request) => request.must_arrive(),
+            ClientMessage::Action(action) => action.must_arrive(),
         }
     }
 }

@@ -16,8 +16,9 @@ use game::{Event, Game};
 use message::Connection;
 use options::Options;
 
+use protocol::GameOver;
+
 use anyhow::{Context, Result};
-use protocol::Init;
 use std::sync::mpsc;
 use std::thread;
 use structopt::StructOpt;
@@ -80,14 +81,8 @@ fn connect(options: &Options) -> Result<Connection> {
         options.port
     );
 
-    let mut connection = Connection::establish((options.addr, options.port).into())?;
-
-    let init = connection.send(Init {
-        nickname: "Zynapse".to_owned(),
-    });
-
-    println!("Received: {:?}", init.wait()?);
-
+    let connection = Connection::establish((options.addr, options.port).into())?;
+    log::info!("Connection established");
     Ok(connection)
 }
 
@@ -96,18 +91,24 @@ fn run(window: Window, events: mpsc::Receiver<Event>, connection: Connection) ->
     let mut game = futures::executor::block_on(Game::new(window, connection))?;
 
     while game.is_running() {
-        while match events.try_recv() {
-            Err(mpsc::TryRecvError::Empty) => false,
-            Err(mpsc::TryRecvError::Disconnected) => {
-                return Err(anyhow!("event loop disconnected"))
+        loop {
+            match events.try_recv() {
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    return Err(anyhow!("event loop disconnected"))
+                }
+                Ok(event) => game.handle_event(event),
             }
-            Ok(event) => {
-                game.handle_event(event);
-                true
-            }
-        } {}
+        }
 
-        game.tick()?;
+        if let Some(game_over) = game.tick()? {
+            let text = match game_over {
+                GameOver::Winner => "YOU WON! :D",
+                GameOver::Loser => "YOU LOST! :(",
+            };
+            println!("Game over: {}", text);
+            break;
+        }
     }
 
     Ok(())

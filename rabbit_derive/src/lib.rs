@@ -3,10 +3,11 @@ extern crate proc_macro;
 #[macro_use]
 mod macros;
 
-use proc_macro2::TokenStream;
-use quote::quote;
+use proc_macro2::{Span, TokenStream};
+use quote::{quote, ToTokens};
 use syn::{
-    spanned::Spanned, Data, DataEnum, DataStruct, DeriveInput, Field, Fields, Ident, Result,
+    parse::ParseStream, punctuated::Punctuated, spanned::Spanned, Data, DataEnum, DataStruct,
+    DeriveInput, Field, Fields, Ident, Lit, MetaNameValue, Path, Result, Token,
 };
 
 struct Errors {
@@ -33,7 +34,12 @@ impl Errors {
     }
 }
 
-#[proc_macro_derive(Rabbit)]
+struct Attributes {
+    pack_fn: Option<Path>,
+    unpack_fn: Option<Path>,
+}
+
+#[proc_macro_derive(Rabbit, attributes(rabbit))]
 pub fn derive_rabbit(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let mut pack = derive_pack_bits(item.clone());
     let unpack = derive_unpack_bits(item);
@@ -41,7 +47,7 @@ pub fn derive_rabbit(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
     pack
 }
 
-#[proc_macro_derive(PackBits)]
+#[proc_macro_derive(PackBits, attributes(rabbit))]
 pub fn derive_pack_bits(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = syn::parse_macro_input!(item as DeriveInput);
 
@@ -139,7 +145,8 @@ fn impl_trait(input: &DeriveInput, name: TokenStream, items: TokenStream) -> Res
 
 fn pack_struct_body(data: &DataStruct) -> Result<TokenStream> {
     let (destructure, idents) = field_destructure(&data.fields);
-    let pack_fields = pack_idents(idents.iter());
+    let attrs = field_attributes(&data.fields)?;
+    let pack_fields = pack_fields(idents.iter().zip(&attrs));
 
     let output = quote! {
         let Self #destructure = self;
@@ -153,21 +160,27 @@ fn pack_struct_body(data: &DataStruct) -> Result<TokenStream> {
 fn pack_enum_body(data: &DataEnum) -> Result<TokenStream> {
     let index_bits = index_bits(data)?;
 
-    let variants = data.variants.iter().enumerate().map(|(index, variant)| {
-        let variant_index = index as u32;
+    let variants = data
+        .variants
+        .iter()
+        .enumerate()
+        .map(|(index, variant)| {
+            let variant_index = index as u32;
 
-        let ident = &variant.ident;
-        let (destructure, idents) = field_destructure(&variant.fields);
-        let pack_fields = pack_idents(idents.iter());
+            let ident = &variant.ident;
+            let (destructure, idents) = field_destructure(&variant.fields);
+            let attrs = field_attributes(&variant.fields)?;
+            let pack_fields = pack_fields(idents.iter().zip(&attrs));
 
-        let rabbit = rabbit!();
-        quote! {
-            Self::#ident #destructure => {
-                #rabbit::WriteBits::write(__writer, #variant_index, #index_bits)?;
-                #pack_fields
-            }
-        }
-    });
+            let rabbit = rabbit!();
+            Ok(quote! {
+                Self::#ident #destructure => {
+                    #rabbit::WriteBits::write(__writer, #variant_index, #index_bits)?;
+                    #pack_fields
+                }
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
 
     let output = quote! {
         match self {
@@ -182,7 +195,7 @@ fn pack_enum_body(data: &DataEnum) -> Result<TokenStream> {
 
 fn unpack_struct_body(data: &DataStruct) -> Result<TokenStream> {
     let (destructure, idents) = field_destructure(&data.fields);
-    let unpack_fields = unpack_fields(idents.iter().zip(&data.fields));
+    let unpack_fields = unpack_fields(idents.iter().zip(&data.fields))?;
 
     let output = quote! {
         #unpack_fields
@@ -195,20 +208,25 @@ fn unpack_struct_body(data: &DataStruct) -> Result<TokenStream> {
 fn unpack_enum_body(data: &DataEnum) -> Result<TokenStream> {
     let index_bits = index_bits(data)?;
 
-    let variants = data.variants.iter().enumerate().map(|(index, variant)| {
-        let variant_index = index as u32;
+    let variants = data
+        .variants
+        .iter()
+        .enumerate()
+        .map(|(index, variant)| {
+            let variant_index = index as u32;
 
-        let ident = &variant.ident;
-        let (destructure, idents) = field_destructure(&variant.fields);
-        let unpack_fields = unpack_fields(idents.iter().zip(&variant.fields));
+            let ident = &variant.ident;
+            let (destructure, idents) = field_destructure(&variant.fields);
+            let unpack_fields = unpack_fields(idents.iter().zip(&variant.fields))?;
 
-        quote! {
-            #variant_index => {
-                #unpack_fields
-                Ok(Self::#ident #destructure)
-            }
-        }
-    });
+            Ok(quote! {
+                #variant_index => {
+                    #unpack_fields
+                    Ok(Self::#ident #destructure)
+                }
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
 
     let rabbit = rabbit!();
     let output = quote! {
@@ -246,6 +264,55 @@ fn field_idents<'a>(fields: &'a Fields) -> impl Iterator<Item = Ident> + 'a {
         })
 }
 
+fn field_attributes(fields: &Fields) -> Result<Vec<Attributes>> {
+    fields.iter().map(extract_attributes).collect()
+}
+
+fn extract_attributes(field: &Field) -> Result<Attributes> {
+    let mut attrs = Attributes::default();
+
+    let raw_attrs = field
+        .attrs
+        .iter()
+        .filter(|attr| attr.path.is_ident("rabbit"));
+
+    for attr in raw_attrs {
+        let args = attr.parse_args_with(|stream: ParseStream| {
+            Punctuated::<MetaNameValue, Token![,]>::parse_terminated(stream)
+        })?;
+
+        let lit_str = |lit| match lit {
+            Lit::Str(value) => Ok(value),
+            _ => Err(err!(lit, "expected a string literal")),
+        };
+
+        for arg in args {
+            if arg.path.is_ident("pack") {
+                attrs.pack_fn = Some(lit_str(arg.lit)?.parse()?);
+            } else if arg.path.is_ident("unpack") {
+                attrs.unpack_fn = Some(lit_str(arg.lit)?.parse()?);
+            } else if arg.path.is_ident("with") {
+                let value: Path = lit_str(arg.lit)?.parse()?;
+                let member = |ident| {
+                    let mut path = value.clone();
+                    path.segments
+                        .push(Ident::new(ident, Span::call_site()).into());
+                    path
+                };
+                attrs.pack_fn = Some(member("pack"));
+                attrs.unpack_fn = Some(member("unpack"));
+            } else {
+                return Err(err!(
+                    &arg.path,
+                    format!("unknown attribute: `{}`", arg.path.to_token_stream())
+                ));
+            }
+        }
+    }
+
+    Ok(attrs)
+}
+
 fn index_bits(data: &DataEnum) -> Result<u8> {
     if data.variants.is_empty() {
         Err(err!(data.enum_token, "enum must have atleast one variant"))
@@ -255,24 +322,48 @@ fn index_bits(data: &DataEnum) -> Result<u8> {
     }
 }
 
-fn pack_idents<'a>(names: impl Iterator<Item = &'a Ident>) -> TokenStream {
+fn pack_fields<'a>(fields: impl Iterator<Item = (&'a Ident, &'a Attributes)>) -> TokenStream {
     let rabbit = rabbit!();
-    quote! {
-        #( #rabbit::PackBits::pack(#names, __writer)?; )*
+
+    let mut extractors = Vec::new();
+    for (ident, attrs) in fields {
+        let extractor = if let Some(pack_fn) = attrs.pack_fn.as_ref() {
+            quote! { (#pack_fn)(#ident, __writer)?; }
+        } else {
+            quote! { #rabbit::PackBits::pack(#ident, __writer)?; }
+        };
+
+        extractors.push(extractor)
     }
+
+    quote! { #( #extractors )* }
 }
 
-fn unpack_fields<'a>(fields: impl Iterator<Item = (&'a Ident, &'a Field)>) -> TokenStream {
+fn unpack_fields<'a>(fields: impl Iterator<Item = (&'a Ident, &'a Field)>) -> Result<TokenStream> {
     let rabbit = rabbit!();
 
-    let readers = fields.map(|(ident, field)| {
-        let ty = &field.ty;
-        quote! {
-            let #ident = <#ty as #rabbit::UnpackBits>::unpack(__reader)?;
-        }
-    });
+    let mut readers = Vec::new();
+    for (ident, field) in fields {
+        let attrs = extract_attributes(field)?;
 
-    quote! {
-        #( #readers )*
+        let reader = if let Some(unpack_fn) = attrs.unpack_fn.as_ref() {
+            quote! { (#unpack_fn)(__reader)? }
+        } else {
+            quote! { #rabbit::UnpackBits::unpack(__reader)? }
+        };
+
+        let ty = &field.ty;
+        readers.push(quote! { let #ident: #ty = #reader; });
+    }
+
+    Ok(quote! { #( #readers )* })
+}
+
+impl Default for Attributes {
+    fn default() -> Self {
+        Attributes {
+            pack_fn: None,
+            unpack_fn: None,
+        }
     }
 }

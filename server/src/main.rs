@@ -19,7 +19,7 @@ mod message;
 mod options;
 
 use anyhow::Context;
-use protocol::RequestKind;
+use protocol::{ClientMessage, RequestKind};
 use structopt::StructOpt;
 use tokio::task;
 
@@ -86,23 +86,23 @@ impl Server {
                 Err(e) => break anyhow!("socket closed: {:#}", e),
             };
 
-            let addr = conn.addr();
+            let peer = conn.peer_addr();
 
-            log::info!("Client connected from [{}]", addr);
+            log::info!("Client connected from [{}]", peer);
 
             let game = self.game.clone();
 
             tokio::spawn(async move {
                 let mut conn = conn;
                 match handle_connection(&mut conn, game).await {
-                    Ok(()) => log::info!("Done with the client [{}]", addr),
+                    Ok(()) => log::info!("Done with the client [{}]", peer),
                     Err(error) => {
-                        log::error!("An error occured with the client [{}]: {:?}", addr, error);
+                        log::error!("An error occured with the client [{}]: {:?}", peer, error);
                     }
                 }
 
                 if let Err(error) = conn.shutdown().await {
-                    log::error!("failed to shutdown connection to [{}]: {:#}", addr, error);
+                    log::error!("failed to shutdown connection to [{}]: {:#}", peer, error);
                 }
             });
         }
@@ -128,11 +128,16 @@ async fn handle_connection(conn: &mut Connection, mut game: GameHandle) -> Resul
 
 /// Wait for the client to initialize the connection.
 async fn initialize_client(conn: &mut Connection, game: &mut GameHandle) -> Result<PlayerHandle> {
-    let request = conn
-        .recv_request()
+    let message = conn
+        .recv()
         .await
         .context("failed to receive init request")?
         .ok_or_else(|| anyhow!("expected a request, found EOF"))?;
+
+    let request = match message {
+        ClientMessage::Request(request) => request,
+        ClientMessage::Action(_) => return Err(anyhow!("expected a request, found an action")),
+    };
 
     let init = match request.kind {
         RequestKind::Init(init) => init,
@@ -149,8 +154,11 @@ async fn initialize_client(conn: &mut Connection, game: &mut GameHandle) -> Resu
         .await
         .context("failed to register player")?;
 
+    let snapshot = game.snapshot().await?;
+
     let connect = protocol::Connect {
         player_id: player.id(),
+        snapshot,
     };
 
     conn.send_response((request.channel, connect).into())
@@ -168,11 +176,14 @@ async fn handle_client(
 ) -> Result<()> {
     loop {
         tokio::select! {
-            request = conn.recv_request() => match request.context("bad request")? {
+            request = conn.recv() => match request.context("bad request")? {
                 None => break Ok(()),
-                Some(request) => {
+                Some(ClientMessage::Request(request)) => {
                     let response = game.handle_request(request, player.id()).await?;
                     conn.send_response(response).await?;
+                }
+                Some(ClientMessage::Action(action)) => {
+                    game.handle_action(action, player.id()).await?;
                 }
             },
 

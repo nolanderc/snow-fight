@@ -1,9 +1,14 @@
 #![allow(dead_code)]
 
 use crate::oneshot;
-use protocol::{Channel, Event, Message, Request, RequestKind, ResponseKind};
+use protocol::{
+    Action, Channel, ClientMessage, Event, IntoRequest, Request, RequestKind,
+    ResponseKind, ServerMessage,
+};
 use socket::{Connection as Socket, Delivery};
 use std::collections::HashMap;
+use std::convert::TryFrom;
+use std::marker::PhantomData;
 use std::net::SocketAddr;
 use std::thread;
 use tokio::runtime::{self, Runtime};
@@ -16,13 +21,22 @@ pub struct Connection {
 
     runtime_thread: thread::JoinHandle<()>,
 
-    requests: mpsc::Sender<(RequestKind, ResponseCallback)>,
+    packages: mpsc::Sender<Package>,
     events: mpsc::Receiver<Event>,
 }
 
+enum Package {
+    Request {
+        kind: RequestKind,
+        callback: ResponseCallback,
+    },
+    Action(Action),
+}
+
 /// Evaluetes to the response given to a certain request from the server.
-pub struct ResponseHandle {
+pub struct ResponseHandle<T> {
     value: oneshot::Receiver<ResponseKind>,
+    _phantom: PhantomData<T>,
 }
 
 /// A channel through which the response to a request may be sent.
@@ -31,7 +45,7 @@ struct ResponseCallback(oneshot::Sender<ResponseKind>);
 /// Routes requests to and from the server.
 struct Router {
     socket: Socket,
-    requests: mpsc::Receiver<(RequestKind, ResponseCallback)>,
+    packages: mpsc::Receiver<Package>,
     events: mpsc::Sender<Event>,
     sequence: Channel,
     callbacks: HashMap<Channel, ResponseCallback>,
@@ -45,12 +59,12 @@ impl Connection {
 
         let socket = runtime.block_on(Socket::connect(addr))?;
 
-        let (requests_tx, requests_rx) = mpsc::channel(128);
+        let (packages_tx, packages_rx) = mpsc::channel(128);
         let (events_tx, events_rx) = mpsc::channel(128);
 
         let mut responder = Router {
             socket,
-            requests: requests_rx,
+            packages: packages_rx,
             events: events_tx,
             sequence: Channel(0),
             callbacks: HashMap::new(),
@@ -69,7 +83,7 @@ impl Connection {
         Ok(Connection {
             handle,
             runtime_thread,
-            requests: requests_tx,
+            packages: packages_tx,
             events: events_rx,
         })
     }
@@ -78,12 +92,12 @@ impl Connection {
     pub fn close(self) {
         let Connection {
             runtime_thread,
-            requests,
+            packages,
             events,
             ..
         } = self;
 
-        drop(requests);
+        drop(packages);
         drop(events);
 
         if runtime_thread.join().is_err() {
@@ -102,26 +116,43 @@ impl Connection {
 
     /// Send a request to the server, returning a handle to the response which may be polled to get
     /// the response.
-    pub fn send<T>(&mut self, request: T) -> ResponseHandle
+    pub fn request<T>(&mut self, request: T) -> ResponseHandle<T::Response>
     where
-        T: Into<RequestKind>,
+        T: IntoRequest,
     {
         let (sender, receiver) = oneshot::channel();
 
-        let request = request.into();
-        let oneshot = ResponseCallback(sender);
+        let kind = request.into_request();
+        let callback = ResponseCallback(sender);
 
-        let mut requests = self.requests.clone();
+        let mut packages = self.packages.clone();
         self.handle.spawn(async move {
-            match requests.send((request, oneshot)).await {
+            match packages.send(Package::Request { kind, callback }).await {
                 Ok(()) => {}
-                Err(mpsc::error::SendError((request, _oneshot))) => {
-                    log::error!("failed to send request, buffer was full: {:?}", request);
+                Err(mpsc::error::SendError(_)) => {
+                    log::error!("failed to send request, buffer was full");
                 }
             }
         });
 
-        ResponseHandle { value: receiver }
+        ResponseHandle {
+            value: receiver,
+            _phantom: Default::default(),
+        }
+    }
+
+    /// Send a request to the server, returning a handle to the response which may be polled to get
+    /// the response.
+    pub fn send_action(&mut self, action: Action) {
+        let mut packages = self.packages.clone();
+        self.handle.spawn(async move {
+            match packages.send(Package::Action(action)).await {
+                Ok(()) => {}
+                Err(mpsc::error::SendError(_)) => {
+                    log::error!("failed to send action, buffer was full");
+                }
+            }
+        });
     }
 }
 
@@ -137,16 +168,19 @@ impl Router {
                     }
                 },
 
-                request = self.requests.recv() => {
-                    match request {
+                package = self.packages.recv() => {
+                    match package {
                         None => {
                             log::info!("closing receiver");
                             break Ok(());
                         },
-                        Some((kind, callback)) => {
+                        Some(Package::Request { kind, callback }) => {
                             let channel = self.setup_callback(callback);
                             let request = Request { channel, kind };
-                            self.send_request(request).await?;
+                            self.send_message(ClientMessage::Request(request)).await?;
+                        }
+                        Some(Package::Action(action)) => {
+                            self.send_message(ClientMessage::Action(action)).await?;
                         }
                     }
                 },
@@ -169,10 +203,10 @@ impl Router {
     }
 
     /// Send a message to the associated callback or broadcast it as an event.
-    async fn dispatch_message(&mut self, message: Message) -> anyhow::Result<()> {
+    async fn dispatch_message(&mut self, message: ServerMessage) -> anyhow::Result<()> {
         match message {
-            Message::Event(event) => self.events.send(event).await?,
-            Message::Response(response) => match self.callbacks.remove(&response.channel) {
+            ServerMessage::Event(event) => self.events.send(event).await?,
+            ServerMessage::Response(response) => match self.callbacks.remove(&response.channel) {
                 Some(callback) => callback.send(response.kind),
                 None => log::warn!("no callback registered for channel {}", response.channel.0),
             },
@@ -194,10 +228,10 @@ impl Router {
     }
 
     /// Send a request to the server.
-    async fn send_request(&mut self, request: Request) -> anyhow::Result<()> {
-        let bytes = protocol::to_bytes(&request)?;
+    async fn send_message(&mut self, message: ClientMessage) -> anyhow::Result<()> {
+        let bytes = protocol::to_bytes(&message)?;
 
-        let delivery = if request.must_arrive() {
+        let delivery = if message.must_arrive() {
             Delivery::Reliable
         } else {
             Delivery::BestEffort
@@ -208,24 +242,32 @@ impl Router {
     }
 }
 
-pub enum PollError {
+pub enum PollError<E> {
     /// The channel has been closed. No value will ever be yielded.
     Closed,
     /// The value has not arrived yet.
     Empty,
+    /// Failed to extract the response.
+    Extract(E),
 }
 
-impl ResponseHandle {
+impl<T> ResponseHandle<T>
+where
+    T: TryFrom<ResponseKind>,
+    T::Error: std::error::Error + Send + Sync + 'static,
+{
     /// Wait for the response to arrive. Blocks the current thread.
-    pub fn wait(self) -> anyhow::Result<ResponseKind> {
-        self.value.recv().map_err(Into::into)
+    pub fn wait(self) -> anyhow::Result<T> {
+        let response = self.value.recv()?;
+        let value = T::try_from(response)?;
+        Ok(value)
     }
 
     #[allow(dead_code)]
     /// Check if the response has arrived, if so, return it.
-    pub fn poll(&mut self) -> Result<ResponseKind, PollError> {
+    pub fn poll(&mut self) -> Result<T, PollError<T::Error>> {
         match self.value.try_recv() {
-            Ok(response) => Ok(response),
+            Ok(response) => T::try_from(response).map_err(PollError::Extract),
             Err(oneshot::TryRecvError::Empty) => Err(PollError::Empty),
             Err(oneshot::TryRecvError::Disconnected) => Err(PollError::Closed),
         }

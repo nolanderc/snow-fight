@@ -1,14 +1,13 @@
-use bitflags::bitflags;
-
 use cgmath::{Point3, Vector3};
-
 use derive_more::{Deref, DerefMut};
-
 use legion::prelude::*;
-
 use std::collections::VecDeque;
-
 use crate::collision;
+
+pub use protocol::Direction;
+
+#[derive(Debug, Copy, Clone)]
+pub struct Owner(pub protocol::PlayerId);
 
 #[derive(Debug, Copy, Clone, Deref, DerefMut)]
 pub struct Position(pub Point3<f32>);
@@ -46,16 +45,6 @@ pub struct Movement {
     pub direction: Direction,
     /// The maximum speed of the entity.
     pub speed: f32,
-}
-
-bitflags! {
-    #[derive(Default)]
-    pub struct Direction: u8 {
-        const NORTH = 1;
-        const WEST = 2;
-        const SOUTH = 4;
-        const EAST = 8;
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -98,7 +87,7 @@ pub struct Health {
 }
 
 impl Health {
-    pub fn with_max(points: u32) -> Health {
+    pub const fn with_max(points: u32) -> Health {
         Health {
             max_points: points,
             points,

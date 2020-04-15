@@ -76,3 +76,42 @@ fn nested_struct() {
         inner: Inner { b: 1, c: 2 },
     });
 }
+
+#[test]
+fn custom_packing_fn() {
+    #[derive(Debug, PartialEq, PackBits, UnpackBits)]
+    struct Line {
+        #[rabbit(pack = "point::pack", unpack = "point::unpack")]
+        start: point::Point,
+        #[rabbit(with = "point")]
+        end: point::Point,
+    }
+
+    assert_lossless(&Line {
+        start: point::Point { x: 0, y: 4 },
+        end: point::Point { x: 37, y: 1 },
+    });
+}
+
+mod point {
+    use rabbit::{PackBits, ReadBits, UnpackBits, WriteBits};
+
+    #[derive(Debug, PartialEq)]
+    pub struct Point {
+        pub x: u8,
+        pub y: u8,
+    }
+
+    pub fn pack<W: WriteBits>(point: &Point, writer: &mut W) -> Result<(), W::Error> {
+        point.x.pack(writer)?;
+        point.y.pack(writer)?;
+        Ok(())
+    }
+
+    pub fn unpack<R: ReadBits>(reader: &mut R) -> Result<Point, R::Error> {
+        Ok(Point {
+            x: u8::unpack(reader)?,
+            y: u8::unpack(reader)?,
+        })
+    }
+}

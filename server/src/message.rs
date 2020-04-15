@@ -1,11 +1,10 @@
-use protocol::{Event, Message, Request, Response};
+use protocol::{ClientMessage, Event, Response, ServerMessage};
 use socket::{Connection as Socket, Delivery, Listener as SocketListener};
 use std::net::SocketAddr;
 use tokio::net::ToSocketAddrs;
 
 /// A connection to a single client.
 pub struct Connection {
-    addr: SocketAddr,
     socket: Socket,
 }
 
@@ -22,12 +21,12 @@ impl Connection {
     }
 
     /// Get the address of the client.
-    pub fn addr(&self) -> SocketAddr {
-        self.addr
+    pub fn peer_addr(&self) -> SocketAddr {
+        self.socket.peer_addr()
     }
 
     /// Send a message to the client.
-    pub async fn send(&mut self, message: &Message) -> crate::Result<()> {
+    pub async fn send(&mut self, message: &ServerMessage) -> crate::Result<()> {
         let bytes = protocol::to_bytes(message)?;
 
         let delivery = if message.must_arrive() {
@@ -43,20 +42,20 @@ impl Connection {
 
     /// Send a response to the client.
     pub async fn send_response(&mut self, response: Response) -> crate::Result<()> {
-        self.send(&Message::Response(response)).await
+        self.send(&ServerMessage::Response(response)).await
     }
 
     /// Send an event to the client.
     pub async fn send_event(&mut self, event: Event) -> crate::Result<()> {
-        self.send(&Message::Event(event)).await
+        self.send(&ServerMessage::Event(event)).await
     }
 
-    /// Receive a request from the client. Returns `None` in case no more requests will be received
+    /// Receive a message from the client. Returns `None` in case no more messages will be received
     /// from the client.
-    pub async fn recv_request(&mut self) -> crate::Result<Option<Request>> {
+    pub async fn recv(&mut self) -> crate::Result<Option<ClientMessage>> {
         if let Some(bytes) = self.socket.recv().await {
-            let request = protocol::from_bytes(&bytes)?;
-            Ok(Some(request))
+            let message = protocol::from_bytes(&bytes)?;
+            Ok(Some(message))
         } else {
             Ok(None)
         }
@@ -80,8 +79,6 @@ impl Listener {
     /// Wait for a new client to connect to the socket.
     pub async fn accept(&mut self) -> crate::Result<Connection> {
         let socket = self.listener.accept().await?;
-        let addr = self.listener.local_addr().unwrap();
-
-        Ok(Connection { addr, socket })
+        Ok(Connection { socket })
     }
 }
