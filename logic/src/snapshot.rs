@@ -178,11 +178,11 @@ fn players(world: &World) -> Vec<PEntity> {
     .map(
         move |(id, position, movement, interaction, health, owner)| {
             let player = Player {
-                holding: dbg!(interaction.holding).and_then(entity_id(world)),
-                breaking: dbg!(interaction.breaking).and_then(entity_id(world)),
+                holding: interaction.holding.and_then(entity_id(world)),
+                breaking: interaction.breaking.and_then(entity_id(world)),
                 movement: movement.direction,
                 position: position.0,
-                owner: dbg!(owner.0),
+                owner: owner.0,
                 health: health.points,
                 max_health: health.max_points,
             };

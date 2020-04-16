@@ -178,8 +178,8 @@ where
     where
         R: ReadBits,
     {
-        let len = usize::unpack(reader)?;
-        let mut data = Vec::with_capacity(len);
+        let len = u32::unpack(reader)?;
+        let mut data = Vec::with_capacity(len as usize);
         for _ in 0..len {
             let item = T::unpack(reader)?;
             data.push(item);
