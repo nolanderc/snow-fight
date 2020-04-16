@@ -139,8 +139,8 @@ async fn initialize_client(conn: &mut Connection, game: &mut GameHandle) -> Resu
         ClientMessage::Action(_) => return Err(anyhow!("expected a request, found an action")),
     };
 
-    let init = match request.kind {
-        RequestKind::Init(init) => init,
+    match request.kind {
+        RequestKind::Init => (),
         _ => {
             return Err(anyhow!(
                 "exepected an 'Init' request, found '{}'",
@@ -150,7 +150,7 @@ async fn initialize_client(conn: &mut Connection, game: &mut GameHandle) -> Resu
     };
 
     let player = game
-        .register_player(init)
+        .register_player()
         .await
         .context("failed to register player")?;
 
@@ -179,7 +179,7 @@ async fn handle_client(
             request = conn.recv() => match request.context("bad request")? {
                 None => break Ok(()),
                 Some(ClientMessage::Request(request)) => {
-                    let response = game.handle_request(request, player.id()).await?;
+                    let response = game.handle_request(request).await?;
                     conn.send_response(response).await?;
                 }
                 Some(ClientMessage::Action(action)) => {

@@ -172,11 +172,7 @@ impl Game {
         connection: &mut Connection,
         snapshots: &mut SnapshotEncoder,
     ) -> Result<LocalPlayer> {
-        let init = connection
-            .request(Init {
-                nickname: "Something".into(),
-            })
-            .wait()?;
+        let init = connection.request(Init).wait()?;
 
         let config = RestoreConfig {
             active_player: None,

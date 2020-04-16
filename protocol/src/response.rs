@@ -16,8 +16,6 @@ pub enum ResponseKind {
     Error(String),
     Pong(Pong),
     Connect(Connect),
-    PlayerList(PlayerList),
-    ChatSent,
 }
 
 #[derive(Debug, Clone, Error)]
@@ -29,12 +27,6 @@ pub enum FromResponseError {
         found: &'static str,
         expected: &'static str,
     },
-}
-
-/// A list of the currently connected clients
-#[derive(Debug, Clone, PackBits, UnpackBits)]
-pub struct PlayerList {
-    pub players: Vec<PlayerId>,
 }
 
 /// Response to a Ping.
@@ -66,8 +58,6 @@ impl Response {
         match self.kind {
             ResponseKind::Error(_) => true,
             ResponseKind::Connect(_) => true,
-            ResponseKind::PlayerList(_) => true,
-            ResponseKind::ChatSent => true,
             ResponseKind::Pong(_) => false,
         }
     }
@@ -78,8 +68,6 @@ impl ResponseKind {
         match self {
             ResponseKind::Error(_) => "Error",
             ResponseKind::Connect(_) => "Connect",
-            ResponseKind::PlayerList(_) => "PlayerList",
-            ResponseKind::ChatSent => "ChatSent",
             ResponseKind::Pong(_) => "Pong",
         }
     }

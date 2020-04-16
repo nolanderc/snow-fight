@@ -13,8 +13,8 @@ use logic::resources::DeadEntities;
 use logic::snapshot::SnapshotEncoder;
 
 use protocol::{
-    Action, ActionKind, Chat, EntityId, Event, EventKind, GameOver, Init, PlayerId, PlayerList,
-    Request, RequestKind, Response, ResponseKind, Snapshot,
+    Action, ActionKind, EntityId, Event, EventKind, GameOver, PlayerId, Request, RequestKind,
+    Response, ResponseKind, Snapshot,
 };
 
 /// How many times per second to update the game world.
@@ -36,7 +36,6 @@ pub struct Game {
 
 #[derive(Debug, Clone)]
 struct PlayerData {
-    name: String,
     entity: Entity,
     network_id: EntityId,
     events: mpsc::Sender<Event>,
@@ -57,11 +56,9 @@ pub struct GameHandle {
 enum Command {
     Request {
         request: Request,
-        player: PlayerId,
         callback: Callback<Response>,
     },
     RegisterPlayer {
-        init: Init,
         callback: Callback<PlayerHandle>,
     },
     DisconnectPlayer(PlayerId),
@@ -227,18 +224,14 @@ impl Game {
     /// Execute a command.
     fn execute_command(&mut self, command: Command) {
         match command {
-            Command::RegisterPlayer { init, callback } => {
-                callback.send(self.register_player(init));
+            Command::RegisterPlayer { callback } => {
+                callback.send(self.register_player());
             }
             Command::DisconnectPlayer(player) => {
                 self.remove_player(player);
             }
-            Command::Request {
-                callback,
-                request,
-                player,
-            } => {
-                let message = self.handle_request(request, player);
+            Command::Request { callback, request } => {
+                let message = self.handle_request(request);
                 callback.send(message);
             }
             Command::Snapshot { callback } => {
@@ -250,7 +243,7 @@ impl Game {
     }
 
     /// Create and register a new player
-    fn register_player(&mut self, init: Init) -> PlayerHandle {
+    fn register_player(&mut self) -> PlayerHandle {
         let player = self.next_player_id();
         let entity = logic::add_player(&mut self.world, player);
 
@@ -259,7 +252,6 @@ impl Game {
         let network_id = *self.world.get_component::<EntityId>(entity).unwrap();
 
         let data = PlayerData {
-            name: init.nickname,
             network_id,
             entity,
             events: sender,
@@ -289,20 +281,12 @@ impl Game {
     }
 
     /// Perform the request and return the result in a message
-    fn handle_request(&mut self, request: Request, player: PlayerId) -> Response {
+    fn handle_request(&mut self, request: Request) -> Response {
         let kind = match request.kind {
-            RequestKind::Ping(_) => protocol::Pong.into(),
-            RequestKind::Init(_) => {
+            RequestKind::Ping => protocol::Pong.into(),
+            RequestKind::Init => {
                 let error = "Requested 'Init' on already initialized player";
                 ResponseKind::Error(error.into())
-            }
-
-            RequestKind::PlayerList => self.list_players(),
-
-            RequestKind::SendChat(message) => {
-                let chat = Chat { player, message };
-                self.broadcast(chat);
-                ResponseKind::ChatSent
             }
         };
 
@@ -310,12 +294,6 @@ impl Game {
             channel: request.channel,
             kind,
         }
-    }
-
-    /// Return a list of all currently connected players.
-    fn list_players(&self) -> ResponseKind {
-        let players = self.players.keys().copied().collect();
-        PlayerList { players }.into()
     }
 
     /// Get a snapshot of the current game state.
@@ -357,8 +335,8 @@ impl Game {
 
 impl GameHandle {
     /// Register a new client and return it's id.
-    pub async fn register_player(&mut self, init: Init) -> crate::Result<PlayerHandle> {
-        self.send_with(|callback| Command::RegisterPlayer { init, callback })
+    pub async fn register_player(&mut self) -> crate::Result<PlayerHandle> {
+        self.send_with(|callback| Command::RegisterPlayer { callback })
             .await
     }
 
@@ -369,17 +347,9 @@ impl GameHandle {
     }
 
     /// Handle a request made by a player.
-    pub async fn handle_request(
-        &mut self,
-        request: Request,
-        player: PlayerId,
-    ) -> crate::Result<Response> {
-        self.send_with(move |callback| Command::Request {
-            request,
-            player,
-            callback,
-        })
-        .await
+    pub async fn handle_request(&mut self, request: Request) -> crate::Result<Response> {
+        self.send_with(move |callback| Command::Request { request, callback })
+            .await
     }
 
     /// Get a snapshot of the current game state.

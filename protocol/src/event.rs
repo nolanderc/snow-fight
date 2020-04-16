@@ -12,30 +12,21 @@ pub struct Event {
 /// Different kind of events.
 #[derive(Debug, Clone, PackBits, UnpackBits, From)]
 pub enum EventKind {
-    Chat(Chat),
     Snapshot(Arc<Snapshot>),
     GameOver(GameOver),
 }
 
-/// A chat message was sent by a player.
-#[derive(Debug, Clone, PackBits, UnpackBits)]
-pub struct Chat {
-    pub player: PlayerId,
-    pub message: String,
-}
-
 #[derive(Debug, Clone, PackBits, UnpackBits)]
 pub enum GameOver {
-    /// The player receiving this won.
-    Winner,
     /// The player receiving this lost.
     Loser,
+    /// The player receiving this won.
+    Winner,
 }
 
 impl Event {
     pub fn must_arrive(&self) -> bool {
         match self.kind {
-            EventKind::Chat(_) => true,
             EventKind::Snapshot(_) => false,
             EventKind::GameOver(_) => true,
         }

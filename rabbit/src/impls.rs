@@ -162,7 +162,7 @@ where
     where
         W: WriteBits,
     {
-        self.len().pack(writer)?;
+        (self.len() as u32).pack(writer)?;
         for item in self {
             item.pack(writer)?;
         }
@@ -196,7 +196,7 @@ where
     where
         W: WriteBits,
     {
-        self.len().pack(writer)?;
+        (self.len() as u32).pack(writer)?;
         for item in self {
             item.pack(writer)?;
         }
