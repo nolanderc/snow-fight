@@ -713,6 +713,8 @@ The client requested to move in a certain direction.
 
 - `direction` (`Direction`): the direction to move in.
 
+---
+
 
 # The Client
 
