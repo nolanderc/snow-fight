@@ -5,9 +5,6 @@ author:
     Christofer Nolander [cnol@kth.se](mailto:cnol@kth.se)
 ---
 
-
-# Protocol
-
 This document specifies the network protocol used for communication between the
 server and client. The protocol is inspired by a series of articles made by
 Glenn Fiedler ([Gaffer on Games](https://gafferongames.com/)).
@@ -16,7 +13,7 @@ Unless otherwise specified, all integers in this document are assumed to be in
 network (big endian) byte order.
 
 
-## Transport
+# Transport
 
 UDP is used as the transport layer of choice, this is due to its lower latency
 and lack of reliability and congestion control compared to TCP. It might at
@@ -36,7 +33,7 @@ failed transaction. So what we really need is a way to toggle reliability on and
 off on a message by message basis. 
 
 
-### Implementation
+## Implementation
 
 We can implement reliability by adopting a technique similar to TCP: resending
 unacknowledged packets. We do, however, need to make sure that unreliable
@@ -56,7 +53,7 @@ all chunks have arrived in a given sequence the payload can be reconstructed and
 used in the program.
 
 
-#### Packet Header
+### Packet Header
 
 The packet header contains information for reconstructing the packets on the
 receiver. It is a total of 4 bytes:
@@ -89,7 +86,7 @@ Layout of `Flags`:
 - `END`: if set, the connection has closed.
 
 
-#### Sending Packets
+### Sending Packets
 
 A sequence consists of up to 256 chunks. Each chunk is a maximum of 504 bytes.
 This limit comes from the fact that the MTU is guaranteed to be at least 576
@@ -104,7 +101,7 @@ sender must mark the packet that contains the last chunk in the sequence with
 the `FIN` flag.
 
 
-#### Receiving Packets
+### Receiving Packets
 
 When a packet with the `FIN` bit set the receiver knows how many chunks are in
 the sequence (chunk indices 0 through `Chunk` inclusive). Once all chunks in a
@@ -113,7 +110,7 @@ program. Care must be taken to avoid payload duplication leading to duplicate
 payloads being received.
 
 
-##### Acknowledging Packets
+#### Acknowledging Packets
 
 If a packet with the `REL` flag set is received the receiver should immediately
 send back another packet with the `ACK` flag set as well as `Chunk` and
@@ -127,7 +124,7 @@ resending the packet with the same `Sequence` id and `Chunk` index as the
 incoming packet.
 
 
-## Connections
+# Connections
 
 UDP is a connectionless protocol. In this game we want connections in order to
 manage clients easier. How we initialize a connection varies depending on if we
@@ -148,7 +145,7 @@ If the client or server does not receive a packet from the other side for more
 than 15 seconds, the connection is considered closed.
 
 
-### Init
+## Init
 
 The `Init` message consists of a single 32-bit integer:
 
@@ -164,7 +161,7 @@ This integer is called the `Salt` and should be randomly chosen by the client
 for reasons that well be made clear below.
 
 
-### Challenge
+## Challenge
 
 The `Challenge` messages is used to challenge the authenticity of the connecting
 client. The IP and UDP header contains the source address of the packet, but
@@ -185,7 +182,7 @@ The `Challenge` consists of a single 32-bit integer:
 This integer is called the `Pepper` and is randomly chosen by the server.
 
 
-### ChallengeResponse
+## ChallengeResponse
 
 In order to make sure that the client that sent the `Init` request was the same
 as the one specified in the IP/UDP headers we require that the client has access
@@ -207,13 +204,13 @@ This integer is called the `Seasoning` and is the XOR of the `Salt` and
 `Pepper`.
 
 
-### Verification
+## Verification
 
 When the server receives the `ChallengeResponse` response from the client it can
 verify that the `Seasoning` is in fact the expected value (`Salt XOR Pepper`).
 
 
-## Binary Encoding of Messages
+# Binary Encoding of Messages
 
 With a connection established we can finally start sending game related
 messages... almost.  We still need a way to encode and decode the messages, both
@@ -222,7 +219,7 @@ calling Rabbit (derived from raw-bits). In order to keep message sizes down it
 is not self describing and uses both bit-packing and variable size integers.
 
 
-### Bitpacking
+## Bitpacking
 
 The concept "bitpacking" is rather simple, instead of seeing a payload as a
 list of bytes we seem them as a list of bits. 
@@ -244,7 +241,7 @@ endian order.
 Decoding the encoded data is just running this process in reverse.
 
 
-#### Example
+### Example
 
 Consider that we want to encode three numbers in order using Rabbit. We begin by
 converting them into binary:
@@ -281,7 +278,7 @@ Group:   "11110100" "01011000"
 Finally we can send the bytes, in the order we get when reading left to right.
 
 
-### Variable length integers
+## Variable length integers
 
 Usually, numbers tend to be small. We regularly use 32-bit or even 64-bit
 integers, when not strictly necessary, only to get some extra redundancy.
@@ -289,7 +286,7 @@ However, that wastes a lot of space that we want to reclaim. In order to do so
 we encode integers using a zig-zag variable length encoding.
 
 
-#### Encoding Unsigned Integers
+### Encoding Unsigned Integers
 
 When encoding a `n`-byte integer `i` we first determine the smallest number of
 bytes necessary to encode it if the highest bytes are implicitly padded with
@@ -303,7 +300,7 @@ we write the lowest `m` bytes of `i` to the stream in little endian order. The
 number `i` has now been encoded.
 
 
-#### Decoding Unsigned Integers
+### Decoding Unsigned Integers
 
 When decoding a `n`-byte integer `i` we first determine the smallest number of
 bits required to encode the number `n - 1`, call this number `k`. We then read
@@ -311,7 +308,7 @@ the `k`-bit number `m` from the stream. Then we read `m + 1` bytes from the
 stream, which is our number `i`.
 
 
-#### Encoding and Decoding Signed Integers
+### Encoding and Decoding Signed Integers
 
 Signed integers are encoded using twos complement and a zig-zag pattern. The
 reason we special case signed integers is that negative numbers, when encoded as
@@ -341,13 +338,13 @@ For details on how to convert between them, see:
 https://developers.google.com/protocol-buffers/docs/encoding?csw=1#signed-integers
 
 
-#### Encoding/Decoding Floating Point Numbers
+### Encoding/Decoding Floating Point Numbers
 
 32 and 64 bit floating point numbers are encoded and decoded as 32 bits with the
 LSB of the fractional part first according to the IEEE 754 standard.
 
 
-## Messages
+# Messages
 
 Messages are sent between the client and server in order to exchange
 information. The messages consists of various data structures encoded using the
@@ -357,7 +354,7 @@ The client may send `Request`s to the server using a specific channel id. The
 channel will then respond with a `Response` using that same channel id.
 
 
-### Conventions
+## Conventions
 
 In order to define the encoding of messages, and keep this section readable, the
 components of every message is going to be defined in a list. Components of the
@@ -402,12 +399,12 @@ Additionally repetitions may be specified like so:
 ---
 
 
-### ServerMessage
+## ServerMessage
 
 A message coming from the server: either an `Event` or `Response`.
 
 
-*Encoding:*
+### Encoding
 
 - `variant` (1-bit integer): the kind of message
 - `body` (if `variant` = 0 then `Event`)
@@ -416,11 +413,11 @@ A message coming from the server: either an `Event` or `Response`.
 ---
 
 
-### Event
+## Event
 
 An event occured at a specific time.
 
-*Encoding:*
+### Encoding
 
 - `time` (u32): the tick index at which the event happened
 - `kind` (`EventKind`): the kind of event that occured
@@ -428,11 +425,11 @@ An event occured at a specific time.
 ---
 
 
-### EventKind
+## EventKind
 
 A specific event that happened.
 
-*Encoding:*
+### Encoding
 
 - `variant` (u1)
 - `body` (if `variant` = 0 then `Snapshot`): a snapshot of the current game
@@ -442,23 +439,23 @@ A specific event that happened.
 ---
 
 
-### GameOver
+## GameOver
 
 The result of a game. Tells the client if it won the game or lost.
 
-*Encoding:*
+### Encoding
 
 - `variant` (u1): if 0, the client lost. If 1, the client won.
 
 ---
 
 
-### Snapshot
+## Snapshot
 
 A snapshot of the current game state. Contains the state of each entity in the
 world.
 
-*Encoding:*
+### Encoding
 
 - `count` (u32): the number of entities in the world.
 - `entities` (`count` * `Entity`): All entities in the world.
@@ -466,11 +463,11 @@ world.
 ---
 
 
-### Entity
+## Entity
 
 A single entity in the world.
 
-*Encoding:*
+### Encoding
 
 - `id` (u32): the id of the entity.
 - `kind` (`EntityKind`): the kind of entity.
@@ -478,11 +475,11 @@ A single entity in the world.
 ---
 
 
-### EntityKind
+## EntityKind
 
 Different kinds of entities.
 
-*Encoding:*
+### Encoding
 
 - `variant` (u2)
 - `body` (if `variant` = 0 then `Object`)
@@ -492,11 +489,11 @@ Different kinds of entities.
 ---
 
 
-### Object
+## Object
 
 An object in the world. 
 
-*Encoding:*
+### Encoding
 
 - `position` (`Point`): the location of the object in the world 
 - `kind` (u1): if 0 then the object is a tree, otherwise it is a mushroom
@@ -509,11 +506,11 @@ An object in the world.
 ---
 
 
-### Player
+## Player
 
 A player in the world. 
 
-*Encoding:*
+### Encoding
 
 - `position` (`Point`): the location of the object in the world 
 - `movement` (`Direction`): the direction the player is moving
@@ -530,23 +527,23 @@ A player in the world.
 ---
 
 
-### Dead
+## Dead
 
 The entity has died or was destroyed.
 
-*Encoding:*
+### Encoding
 
 Empty
 
 ---
 
 
-### Direction
+## Direction
 
 The direction in the world, as seen from above, with north aligned with the
 positive y-axis.
 
-*Encoding:*
+### Encoding
 
 - `bits` (u8): a bitfield specifying the direction:
     - if bit 0 is set, the direction points north.
@@ -557,12 +554,12 @@ positive y-axis.
 ---
 
 
-### Point
+## Point
 
 An position in the world. The x-axis is given from left to right, the y-axis
 backward to forwards and the z-axis from below upwards.
 
-*Encoding:*
+### Encoding
 
 - `x` (f32): the x-coordinate in the world
 - `y` (f32): the y-coordinate in the world
@@ -571,11 +568,11 @@ backward to forwards and the z-axis from below upwards.
 ---
 
 
-### Response
+## Response
 
 A response to a `Request` made by a client.
 
-*Encoding:*
+### Encoding
 
 - `channel` (u32): the id of the request this is a response to.
 - `kind` (`ResponseKind`)
@@ -583,11 +580,11 @@ A response to a `Request` made by a client.
 ---
 
 
-### ResponseKind
+## ResponseKind
 
 The type of response.
 
-*Encoding:*
+### Encoding
 
 - `variant` (u2)
 - `body` (if `variant` = 0 then `Error`)
@@ -597,11 +594,11 @@ The type of response.
 ---
 
 
-### Error
+## Error
 
 The request failed.
 
-*Encoding:*
+### Encoding
 
 - `length` (u32): the length of the error message
 - `text` (`length` * u8): a UTF-8 encoded error message.
@@ -609,23 +606,23 @@ The request failed.
 ---
 
 
-### Pong
+## Pong
 
 A response to a ping, may be used to calculate latency or to stop the connection
 from timing out.
 
-*Encoding:*
+### Encoding
 
 Empty
 
 ---
 
 
-### Connect
+## Connect
 
 The player connected to the game session.
 
-*Encoding:*
+### Encoding
 
 - `player` (u32): the player id assigned to this client.
 - `snapshot` (`Snapshot`): the current state of the game.
@@ -633,11 +630,11 @@ The player connected to the game session.
 ---
 
 
-### ClientMessage
+## ClientMessage
 
 A message sent from the client to the server.
 
-*Encoding:*
+### Encoding
 
 - `variant` (u32)
 - `body` (if `variant` = 0 then `Request`)
@@ -646,11 +643,11 @@ A message sent from the client to the server.
 ---
 
 
-### Request
+## Request
 
 A request from the client to the server.
 
-*Encoding:*
+### Encoding
 
 - `channel` (u32): the channel to receive the response from.
 - `kind` (`RequestKind`): the kind of request
@@ -658,11 +655,11 @@ A request from the client to the server.
 ---
 
 
-### RequestKind
+## RequestKind
 
 Specifies a certain kind of request.
 
-*Encoding:*
+### Encoding
 
 - `variant` (u1)
 - `body` (if `variant` = 0 then `Ping`): request a `Pong` from the server.
@@ -671,11 +668,11 @@ Specifies a certain kind of request.
 ---
 
 
-### Action
+## Action
 
 The client performed an action.
 
-*Encoding:*
+### Encoding
 
 - `variant` (u2)
 - `body` (if `variant` = 0 then `Break`)
@@ -685,11 +682,11 @@ The client performed an action.
 ---
 
 
-### Break
+## Break
 
 The client requested to break an entity.
 
-*Encoding:*
+### Encoding
 
 - `is_breaking` (u1): should an entity be broken or not?
 - `entity` (if `is_breaking` = 1 then u32): the entity to break.
@@ -697,27 +694,27 @@ The client requested to break an entity.
 ---
 
 
-### Throw
+## Throw
 
 The client requested to throw the currently held entity.
 
-*Encoding:*
+### Encoding
 
 - `target` (`Point`): the location to throw the entity towards.
 
 ---
 
 
-### Move
+## Move
 
 The client requested to move in a certain direction.
 
-*Encoding:*
+### Encoding
 
 - `direction` (`Direction`): the direction to move in.
 
 
-## The Client
+# The Client
 
 In principle, all the client has to do is:
 
@@ -731,11 +728,9 @@ Advanced clients, such as the reference implementation in this repository may
 choose to do some client side interpolation.
 
 
-\pagebreak
+# State Diagram
 
-## State Diagram
-
-### Server
+## Server
 
 ```
                     +---------------+             +---------------------------+
@@ -759,7 +754,7 @@ choose to do some client side interpolation.
 ```
 
 
-### Client
+## Client
 
 ```
  Start ----> Establish connection -----> Send Init -----> Receive Connect
