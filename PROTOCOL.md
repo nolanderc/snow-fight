@@ -1,3 +1,10 @@
+--- 
+title: 
+    Game Protocol
+author: 
+    Christofer Nolander [cnol@kth.se](mailto:cnol@kth.se)
+---
+
 
 # Protocol
 
@@ -141,7 +148,7 @@ If the client or server does not receive a packet from the other side for more
 than 15 seconds, the connection is considered closed.
 
 
-### `Init`
+### Init
 
 The `Init` message consists of a single 32-bit integer:
 
@@ -157,7 +164,7 @@ This integer is called the `Salt` and should be randomly chosen by the client
 for reasons that well be made clear below.
 
 
-### `Challenge`
+### Challenge
 
 The `Challenge` messages is used to challenge the authenticity of the connecting
 client. The IP and UDP header contains the source address of the packet, but
@@ -178,7 +185,7 @@ The `Challenge` consists of a single 32-bit integer:
 This integer is called the `Pepper` and is randomly chosen by the server.
 
 
-### `ChallengeResponse`
+### ChallengeResponse
 
 In order to make sure that the client that sent the `Init` request was the same
 as the one specified in the IP/UDP headers we require that the client has access
@@ -392,87 +399,104 @@ Additionally repetitions may be specified like so:
 - `count` (u32): number of numbers in the list.
 - `list` (`count` * u32): a list of `count` 32-bit unsigned integers.
 
-### `ServerMessage`
+---
+
+
+### ServerMessage
 
 A message coming from the server: either an `Event` or `Response`.
 
 
-#### Encoding
+*Encoding:*
 
 - `variant` (1-bit integer): the kind of message
 - `body` (if `variant` = 0 then `Event`)
 - `body` (if `variant` = 1 then `Response`)
 
+---
 
-### `Event`
+
+### Event
 
 An event occured at a specific time.
 
-#### Encoding
+*Encoding:*
 
 - `time` (u32): the tick index at which the event happened
 - `kind` (`EventKind`): the kind of event that occured
 
+---
 
-### `EventKind`
+
+### EventKind
 
 A specific event that happened.
 
-#### Encoding
+*Encoding:*
 
 - `variant` (u1)
 - `body` (if `variant` = 0 then `Snapshot`): a snapshot of the current game
   state
 - `body` (if `variant` = 1 then `GameOver`): the game was won/lost
 
+---
 
-### `GameOver`
+
+### GameOver
 
 The result of a game. Tells the client if it won the game or lost.
 
-#### Encoding
+*Encoding:*
 
 - `variant` (u1): if 0, the client lost. If 1, the client won.
 
+---
 
-### `Snapshot`
+
+### Snapshot
 
 A snapshot of the current game state. Contains the state of each entity in the
 world.
 
-#### Encoding
+*Encoding:*
 
 - `count` (u32): the number of entities in the world.
 - `entities` (`count` * `Entity`): All entities in the world.
 
+---
 
-### `Entity`
+
+### Entity
 
 A single entity in the world.
 
-#### Encoding
+*Encoding:*
 
 - `id` (u32): the id of the entity.
 - `kind` (`EntityKind`): the kind of entity.
 
+---
 
-### `EntityKind`
+
+### EntityKind
 
 Different kinds of entities.
 
-#### Encoding
+*Encoding:*
 
 - `variant` (u2)
 - `body` (if `variant` = 0 then `Object`)
 - `body` (if `variant` = 1 then `Player`)
 - `body` (if `variant` = 2 then `Dead`)
 
+---
 
-### `Object`
+
+### Object
 
 An object in the world. 
 
-#### Encoding
+*Encoding:*
 
 - `position` (`Point`): the location of the object in the world 
 - `kind` (u1): if 0 then the object is a tree, otherwise it is a mushroom
@@ -482,12 +506,14 @@ An object in the world.
 - `health` (u32): the current health of an object
 - `max_health` (u32): the maximum amount of health of an object 
 
+---
 
-### `Player`
+
+### Player
 
 A player in the world. 
 
-#### Encoding
+*Encoding:*
 
 - `position` (`Point`): the location of the object in the world 
 - `movement` (`Direction`): the direction the player is moving
@@ -501,22 +527,26 @@ A player in the world.
 - `health` (u32): the current health of an object
 - `max_health` (u32): the maximum amount of health of an object 
 
+---
 
-### `Dead`
+
+### Dead
 
 The entity has died or was destroyed.
 
-#### Encoding
+*Encoding:*
 
 Empty
 
+---
 
-### `Direction`
+
+### Direction
 
 The direction in the world, as seen from above, with north aligned with the
 positive y-axis.
 
-#### Encoding
+*Encoding:*
 
 - `bits` (u8): a bitfield specifying the direction:
     - if bit 0 is set, the direction points north.
@@ -524,139 +554,165 @@ positive y-axis.
     - if bit 2 is set, the direction points south.
     - if bit 3 is set, the direction points east.
 
+---
 
-### `Point`
+
+### Point
 
 An position in the world. The x-axis is given from left to right, the y-axis
 backward to forwards and the z-axis from below upwards.
 
-#### Encoding
+*Encoding:*
 
 - `x` (f32): the x-coordinate in the world
 - `y` (f32): the y-coordinate in the world
 - `z` (f32): the z-coordinate in the world
 
+---
 
-### `Response`
+
+### Response
 
 A response to a `Request` made by a client.
 
-#### Encoding
+*Encoding:*
 
 - `channel` (u32): the id of the request this is a response to.
 - `kind` (`ResponseKind`)
 
+---
 
-### `ResponseKind`
+
+### ResponseKind
 
 The type of response.
 
-#### Encoding
+*Encoding:*
 
 - `variant` (u2)
 - `body` (if `variant` = 0 then `Error`)
 - `body` (if `variant` = 1 then `Pong`)
 - `body` (if `variant` = 2 then `Connect`)
 
+---
 
-### `Error`
+
+### Error
 
 The request failed.
 
-#### Encoding
+*Encoding:*
 
 - `length` (u32): the length of the error message
 - `text` (`length` * u8): a UTF-8 encoded error message.
 
+---
 
-### `Pong`
+
+### Pong
 
 A response to a ping, may be used to calculate latency or to stop the connection
 from timing out.
 
-#### Encoding
+*Encoding:*
 
 Empty
 
+---
 
-### `Connect`
+
+### Connect
 
 The player connected to the game session.
 
-#### Encoding
+*Encoding:*
 
 - `player` (u32): the player id assigned to this client.
 - `snapshot` (`Snapshot`): the current state of the game.
 
+---
 
-### `ClientMessage`
+
+### ClientMessage
 
 A message sent from the client to the server.
 
-#### Encoding
+*Encoding:*
 
 - `variant` (u32)
 - `body` (if `variant` = 0 then `Request`)
 - `body` (if `variant` = 1 then `Action`)
 
+---
 
-### `Request`
+
+### Request
 
 A request from the client to the server.
 
-#### Encoding
+*Encoding:*
 
 - `channel` (u32): the channel to receive the response from.
 - `kind` (`RequestKind`): the kind of request
 
+---
 
-### `RequestKind`
+
+### RequestKind
 
 Specifies a certain kind of request.
 
-#### Encoding
+*Encoding:*
 
 - `variant` (u1)
 - `body` (if `variant` = 0 then `Ping`): request a `Pong` from the server.
 - `body` (if `variant` = 1 then `Init`): request to join the game session.
 
+---
 
-### `Action`
+
+### Action
 
 The client performed an action.
 
-#### Encoding
+*Encoding:*
 
 - `variant` (u2)
 - `body` (if `variant` = 0 then `Break`)
 - `body` (if `variant` = 1 then `Throw`)
 - `body` (if `variant` = 2 then `Move`)
 
+---
 
-### `Break`
+
+### Break
 
 The client requested to break an entity.
 
-#### Encoding
+*Encoding:*
 
 - `is_breaking` (u1): should an entity be broken or not?
 - `entity` (if `is_breaking` = 1 then u32): the entity to break.
 
+---
 
-### `Throw`
+
+### Throw
 
 The client requested to throw the currently held entity.
 
-#### Encoding
+*Encoding:*
 
 - `target` (`Point`): the location to throw the entity towards.
 
+---
 
-### `Move`
+
+### Move
 
 The client requested to move in a certain direction.
 
-#### Encoding
+*Encoding:*
 
 - `direction` (`Direction`): the direction to move in.
 
@@ -674,6 +730,8 @@ In principle, all the client has to do is:
 Advanced clients, such as the reference implementation in this repository may
 choose to do some client side interpolation.
 
+
+\pagebreak
 
 ## State Diagram
 
