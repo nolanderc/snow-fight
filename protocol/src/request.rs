@@ -2,8 +2,12 @@
 use super::*;
 use std::convert::TryFrom;
 
+/// A type that can be converted into a request.
 pub trait IntoRequest {
+    /// The expected response.
     type Response: TryFrom<crate::ResponseKind>;
+
+    /// Perform the conversion.
     fn into_request(self) -> RequestKind;
 }
 
@@ -21,9 +25,11 @@ pub enum RequestKind {
     Init,
 }
 
+/// Ping the server.
 #[derive(Debug, Clone, PackBits, UnpackBits)]
 pub struct Ping;
 
+/// Initialize the game session with the server.
 #[derive(Debug, Clone, PackBits, UnpackBits)]
 pub struct Init;
 

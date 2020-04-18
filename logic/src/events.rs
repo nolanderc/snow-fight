@@ -4,6 +4,7 @@ use legion::prelude::*;
 use crate::components::*;
 use crate::tags::Static;
 
+/// Attempts to throw the object held by `entity` towards the `target`.
 pub fn throw(world: &mut World, entity: Entity, target: Point3<f32>) {
     let held = world
         .get_component_mut::<WorldInteraction>(entity)

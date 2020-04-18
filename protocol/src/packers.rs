@@ -1,5 +1,6 @@
 use rabbit::{PackBits, ReadBits, UnpackBits, WriteBits};
 
+/// Pack and unpack a point.
 pub mod point {
     use super::*;
     use cgmath::Point3;

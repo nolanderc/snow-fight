@@ -4,6 +4,7 @@ use crate::components::{Acceleration, Velocity};
 use crate::resources::TimeStep;
 use crate::System;
 
+/// Apply the acceleration to all entities.
 pub fn system() -> System {
     let query = <(Write<Velocity>, Read<Acceleration>)>::query();
     SystemBuilder::new("gravity")

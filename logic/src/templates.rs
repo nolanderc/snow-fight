@@ -6,6 +6,7 @@ use protocol::snapshot;
 
 use legion::prelude::{Entity, World};
 
+/// The default components of a player.
 pub struct Player {
     pub id: snapshot::EntityId,
     pub position: Position,
@@ -17,6 +18,7 @@ pub struct Player {
     pub owner: Owner,
 }
 
+/// The default components of an object.
 pub struct Object {
     pub id: snapshot::EntityId,
     pub position: Position,
@@ -27,6 +29,7 @@ pub struct Object {
 }
 
 impl Player {
+    /// Insert the player's components into an entity.
     pub fn insert(self, world: &mut World, entity: Entity) {
         let Player {
             id,
@@ -51,6 +54,7 @@ impl Player {
 }
 
 impl Object {
+    /// Insert the ojbect's components into an entity.
     pub fn insert(self, world: &mut World, entity: Entity) {
         let Object {
             id,
@@ -72,6 +76,7 @@ impl Object {
     }
 }
 
+/// Get the collision component for a specific model.
 pub fn collision(model: Model) -> Collision {
     let (width, height) = match model {
         Model::Player => (14, 21),

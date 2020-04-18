@@ -75,12 +75,14 @@ impl super::Game {
         <(Read<Position>, Read<Health>, TryRead<Collision>)>::query()
             .iter_immutable(&self.world)
             .for_each(|(position, health, collision)| {
-                let top = collision.map(|coll| coll.bounds.high.z).unwrap_or(2.0);
-                draw_health_bar(
-                    frame,
-                    position.0 + Vector3::new(0.0, 0.0, top + 0.4),
-                    health.points as f32 / health.max_points as f32,
-                );
+                if health.points < health.max_points {
+                    let top = collision.map(|coll| coll.bounds.high.z).unwrap_or(2.0);
+                    draw_health_bar(
+                        frame,
+                        position.0 + Vector3::new(0.0, 0.0, top + 0.4),
+                        health.points as f32 / health.max_points as f32,
+                    );
+                }
             });
     }
 

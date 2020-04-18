@@ -1,3 +1,5 @@
+//! Author: Christofer Nolander (cnol@kth.se)
+
 pub extern crate legion;
 
 pub mod components;
@@ -27,7 +29,7 @@ use protocol::PlayerId;
 use crate::components::{Model, Position};
 use crate::resources::{DeadEntities, EntityAllocator, TimeStep};
 use crate::tags::Player;
-use crate::tile_map::{Tile, TileKind, TileMap};
+use crate::tile_map::{TileKind, TileMap};
 
 pub type System = Box<dyn Schedulable>;
 
@@ -39,22 +41,30 @@ const VOXEL_SIZE: f32 = 1.0 / 16.0;
 
 const TARGET_TICK_RATE: u32 = 120;
 
+/// An executor that updates the world state using a constistent time step.
 pub struct Executor {
     schedule: Schedule,
     previous_tick: Instant,
 }
 
+/// Different kinds of world presets.
 pub enum WorldKind {
+    /// A world witout any entities.
     Plain,
+    /// A world that contains various objects.
     WithObjects,
 }
 
+/// What kind of logic systems to enable.
 pub enum SystemSet {
+    /// Enable all systems that don't delete entities.
     NonDestructive,
+    /// Enable all systems.
     Everything,
 }
 
 impl Executor {
+    /// Create an executor that runs a specific system schedule.
     pub fn new(schedule: ScheduleBuilder) -> Executor {
         Executor {
             schedule: schedule.build(),
@@ -62,6 +72,7 @@ impl Executor {
         }
     }
 
+    /// Update the world state a number of ticks.
     pub fn tick(&mut self, world: &mut World) {
         let now = Instant::now();
         if let Some(elapsed) = now.checked_duration_since(self.previous_tick) {
@@ -98,7 +109,7 @@ pub fn create_world(kind: WorldKind) -> World {
     world.resources.insert(TimeStep::default());
     world.resources.insert(DeadEntities::default());
 
-    let mut map = island_map(SIZE as i32);
+    let mut map = TileMap::island(SIZE as i32);
     spawn_invisible_walls(&mut world, &map);
     spawn_floor(&mut world);
 
@@ -127,6 +138,7 @@ pub fn add_systems(builder: ScheduleBuilder, set: SystemSet) -> ScheduleBuilder 
     }
 }
 
+/// Add a playre to the world that is controlled by a specific player.
 pub fn add_player(world: &mut World, owner: PlayerId) -> Entity {
     let id = world
         .resources
@@ -153,33 +165,7 @@ pub fn add_player(world: &mut World, owner: PlayerId) -> Entity {
     entity
 }
 
-fn island_map(size: i32) -> TileMap {
-    let mut map = TileMap::new();
-
-    let r = size - 2;
-
-    for x in -size..=size {
-        for y in -size..=size {
-            let mag = x * x + y * y;
-            let r2 = r * r;
-
-            let kind = if mag <= r2 {
-                if mag as f32 / r2 as f32 >= 0.7 {
-                    TileKind::Sand
-                } else {
-                    TileKind::Grass
-                }
-            } else {
-                TileKind::Water
-            };
-
-            map.insert([x, y].into(), Tile::default().with_kind(kind));
-        }
-    }
-
-    map
-}
-
+/// Spawns random objects into the world.
 fn spawn_objects(world: &mut World, map: &mut TileMap) {
     let mut tiles = map
         .iter()
@@ -217,6 +203,7 @@ fn spawn_objects(world: &mut World, map: &mut TileMap) {
     spawn(MUSHROOMS, Model::Mushroom);
 }
 
+/// Spawn invisible walls over water tiles.
 fn spawn_invisible_walls(world: &mut World, map: &TileMap) {
     let components = map
         .iter()
@@ -237,6 +224,7 @@ fn spawn_invisible_walls(world: &mut World, map: &TileMap) {
     world.insert((tags::Static,), components);
 }
 
+/// Create a floor collision box.
 fn spawn_floor(world: &mut World) {
     let size = SIZE as f32;
     let floor = (

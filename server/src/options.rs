@@ -1,6 +1,3 @@
-//! Author(s):
-//! - Christofer Nolander (cnol@kth.se)
-
 use structopt::StructOpt;
 use std::net::IpAddr;
 

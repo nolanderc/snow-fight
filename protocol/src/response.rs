@@ -18,6 +18,7 @@ pub enum ResponseKind {
     Connect(Connect),
 }
 
+/// An error that may occur when extracting the contents of a Response.
 #[derive(Debug, Clone, Error)]
 pub enum FromResponseError {
     #[error("request failed: {0}")]

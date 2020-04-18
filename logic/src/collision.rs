@@ -96,6 +96,7 @@ impl AlignedBox {
         Overlap { volume, resolution }
     }
 
+    /// Find the point of intersection between this box and a ray.
     pub fn ray_intersection(
         self,
         origin: Point3<f32>,
@@ -139,6 +140,8 @@ impl AlignedBox {
         }
     }
 
+    /// Calculate the point of intersectino between this box and another given the translation of
+    /// this box.
     pub fn sweep(self, delta: Vector3<f32>, other: Self) -> Option<SweepCollision> {
         let merged = AlignedBox {
             high: other.high,

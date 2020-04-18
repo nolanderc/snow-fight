@@ -7,6 +7,7 @@ use crate::resources::TimeStep;
 use crate::tags::Static;
 use crate::System;
 
+/// Find all collisions of objects that move continously, ie. have a velocity.
 pub fn continuous_system() -> System {
     let colliders = <(Read<Position>, Read<Collision>)>::query();
     let dynamic = <(
@@ -51,7 +52,7 @@ pub fn continuous_system() -> System {
         })
 }
 
-/// Move entities out collisions
+/// Move entities that move in discrete steps out collisions.
 pub fn discrete_system() -> System {
     let obstacles = <(Read<Position>, Read<Collision>)>::query();
     let dynamic = <(Write<Position>, Read<Collision>)>::query().filter(!tag::<Static>());
@@ -95,6 +96,7 @@ pub fn discrete_system() -> System {
         })
 }
 
+/// Find the first collisions of an entity.
 fn first_collision(
     entity: Entity,
     collision: Collision,
@@ -111,6 +113,7 @@ fn first_collision(
         .min_by(|(_, a_hit), (_, b_hit)| a_hit.entry.partial_cmp(&b_hit.entry).unwrap())
 }
 
+/// Find all overlaps between an entity.
 fn overlaps<'a>(
     entity: Entity,
     collision: Collision,
@@ -125,6 +128,7 @@ fn overlaps<'a>(
         })
 }
 
+/// Creates a new predicate that is true if a collider may collide with a specific entity.
 fn may_collide_with(entity: Entity, collider: Collision) -> impl Fn(&&(Entity, Collision)) -> bool {
     move |(other, other_collider)| {
         entity != *other
@@ -133,6 +137,8 @@ fn may_collide_with(entity: Entity, collider: Collision) -> impl Fn(&&(Entity, C
     }
 }
 
+/// Get the bounding box of an entity. The collision component's bounding box is centered around
+/// origio, so we have to translate it to the current position of the entity.
 fn bounding_box(position: Position, collision: Collision) -> Collision {
     Collision {
         bounds: collision.bounds.translate(position.0.to_vec()),

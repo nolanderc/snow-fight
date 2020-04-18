@@ -6,6 +6,7 @@ use crate::components::{CollisionListener, Projectile, Health};
 use crate::resources::DeadEntities;
 use crate::System;
 
+/// Apply damage when a projectile hits another entity.
 pub fn system() -> System {
     let query = <(Read<CollisionListener>, Read<Projectile>)>::query();
 

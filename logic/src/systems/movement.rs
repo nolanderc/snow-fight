@@ -5,6 +5,7 @@ use crate::components::{Direction, Movement, Position};
 use crate::resources::TimeStep;
 use crate::System;
 
+/// Calculates the new positions for entities that can move.
 pub fn system() -> System {
     let query = <(Read<Movement>, Write<Position>)>::query();
 

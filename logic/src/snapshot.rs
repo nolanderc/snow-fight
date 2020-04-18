@@ -9,12 +9,15 @@ use std::collections::{hash_map::Entry, HashMap};
 
 use protocol::{Entity as PEntity, EntityId, EntityKind, Object, ObjectKind, Player, Snapshot};
 
+/// Store a mapping from network entities to local entity ids.
 #[derive(Debug, Default)]
 pub struct SnapshotEncoder {
     pub mapping: HashMap<EntityId, Entity>,
 }
 
+/// Configuration options when restoring a snapshot.
 pub struct RestoreConfig {
+    /// The player that is currently being controlled by this logic instance.
     pub active_player: Option<Entity>,
 }
 
@@ -70,6 +73,7 @@ impl SnapshotEncoder {
         self.mapping.get(&entity).copied()
     }
 
+    /// Update an entity according to what is found in a snapshot.
     fn update_entity(
         &self,
         world: &mut World,
@@ -90,6 +94,7 @@ impl SnapshotEncoder {
         }
     }
 
+    /// Update a player according the what is contained in a snapshot. 
     fn update_player(
         &self,
         world: &mut World,
@@ -132,6 +137,7 @@ impl SnapshotEncoder {
         world.add_tag(target, tags::Player);
     }
 
+    /// Update a specific ojbect according the what is contained in a snapshot. 
     fn update_object(&self, world: &mut World, target: Entity, id: EntityId, object: &Object) {
         let model = match object.kind {
             ObjectKind::Tree => Model::Tree,
@@ -165,6 +171,7 @@ fn entity_id<'a>(world: &'a World) -> impl Fn(Entity) -> Option<EntityId> + 'a {
     }
 }
 
+/// Extract all players in the world.
 fn players(world: &World) -> Vec<PEntity> {
     <(
         Read<EntityId>,
@@ -195,6 +202,7 @@ fn players(world: &World) -> Vec<PEntity> {
     .collect()
 }
 
+/// Extract all objects in the world.
 fn objects(world: &World) -> Vec<PEntity> {
     <(
         Read<EntityId>,

@@ -16,6 +16,7 @@ pub enum EventKind {
     GameOver(GameOver),
 }
 
+/// The game session ended.
 #[derive(Debug, Clone, PackBits, UnpackBits)]
 pub enum GameOver {
     /// The player receiving this lost.

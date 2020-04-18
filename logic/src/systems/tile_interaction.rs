@@ -7,6 +7,7 @@ use crate::components::{Breakable, Collision, Position, WorldInteraction};
 use crate::resources::TimeStep;
 use crate::System;
 
+/// Allow entities to break other entities.
 pub fn system() -> System {
     let query = <(Write<WorldInteraction>, Read<Position>)>::query();
 
@@ -43,6 +44,7 @@ pub fn system() -> System {
         })
 }
 
+/// Attempt to mine another entity. 
 fn mine(
     world: &mut SubWorld,
     interaction: &mut WorldInteraction,
@@ -69,6 +71,7 @@ fn mine(
     Some(target)
 }
 
+/// Attempt to break an entity.
 fn break_entity(world: &mut SubWorld, target: Entity, amount: f32) -> Option<f32> {
     let mut breakable = world.get_component_mut::<Breakable>(target)?;
     breakable.durability = f32::max(0.0, breakable.durability - amount);

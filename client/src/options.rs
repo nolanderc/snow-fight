@@ -1,6 +1,3 @@
-//! Author(s):
-//! - Christofer Nolander (cnol@kth.se)
-
 use std::net::IpAddr;
 use std::str::FromStr;
 

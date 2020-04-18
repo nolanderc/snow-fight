@@ -6,18 +6,23 @@ use crate::collision;
 
 pub use protocol::Direction;
 
+/// The player that controls the entity.
 #[derive(Debug, Copy, Clone)]
 pub struct Owner(pub protocol::PlayerId);
 
+/// The position of an entity within the world.
 #[derive(Debug, Copy, Clone, Deref, DerefMut)]
 pub struct Position(pub Point3<f32>);
 
+/// The velocity of an entity.
 #[derive(Debug, Copy, Clone, Deref, DerefMut)]
 pub struct Velocity(pub Vector3<f32>);
 
+/// The acceleration currently being applied to the inty.
 #[derive(Debug, Copy, Clone, Deref, DerefMut)]
 pub struct Acceleration(pub Vector3<f32>);
 
+/// The model to render the entity with.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum Model {
     Rect,
@@ -29,6 +34,7 @@ pub enum Model {
 }
 
 impl Model {
+    /// All kinds of models.
     pub const KINDS: &'static [Model] = &[
         Model::Rect,
         Model::Circle,
@@ -39,6 +45,7 @@ impl Model {
     ];
 }
 
+/// This entity can control its movement within the world.
 #[derive(Debug, Clone, Default)]
 pub struct Movement {
     /// The directions the entity is moving
@@ -47,6 +54,7 @@ pub struct Movement {
     pub speed: f32,
 }
 
+/// This entity can interact with the world.
 #[derive(Debug, Clone)]
 pub struct WorldInteraction {
     /// The entity currently being broken by this entity.
@@ -80,6 +88,7 @@ impl Default for Breakable {
     }
 }
 
+/// The current healhth of an entity
 #[derive(Debug, Clone)]
 pub struct Health {
     pub max_points: u32,
@@ -87,6 +96,7 @@ pub struct Health {
 }
 
 impl Health {
+    /// Create a full health bar with a maximum amount of health points. 
     pub const fn with_max(points: u32) -> Health {
         Health {
             max_points: points,
@@ -95,24 +105,33 @@ impl Health {
     }
 }
 
+/// This entity is an entity that deals damage.
 #[derive(Debug, Clone)]
 pub struct Projectile {
+    /// The amount of damage dealt upon impact.
     pub damage: u32,
 }
 
+/// This entity can collide with other entities.
 #[derive(Debug, Copy, Clone)]
 pub struct Collision {
+    /// The bounding box of the collider.
     pub bounds: collision::AlignedBox,
+    /// This entity ignores collisions with this entity.
     pub ignored: Option<Entity>,
 }
 
+/// A list of all collisions that happened during the last tick.
 #[derive(Debug, Default)]
 pub struct CollisionListener {
+    /// The collisions accumulated during the previous tick.
     pub collisions: VecDeque<CollisionEvent>,
 }
 
+/// A collision.
 #[derive(Debug, Clone)]
 pub struct CollisionEvent {
+    /// The entity that was collided with.
     pub entity: Entity,
 }
 
