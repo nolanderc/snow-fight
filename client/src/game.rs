@@ -24,7 +24,7 @@ use std::f32::consts::PI;
 use std::sync::Arc;
 use std::time::Instant;
 
-const TITLE: &str = "Overengineering";
+const TITLE: &str = "Snow Fight";
 
 use winit::{
     dpi::PhysicalSize,
